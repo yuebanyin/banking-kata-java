@@ -33,4 +33,10 @@ Author repair after Michele’s third review
 
 - The accepted creation mutation is now a regression: changing an acknowledged 201 creation to `account_not_found` and deleting its exact operation ID from the final snapshot is rejected.
 - The accepted financial mutation is now a regression: any transport error or unexpected request failure is rejected, and each financial result must match its route-specific HTTP status/body and exact source/candidate request pair.
-- Candidate evidence schema version 4 and all deterministic policy/private outputs were regenerated; Michele remains the independent challenger and a post-repair review is not claimed here.
+- Candidate evidence schema version 5 and all deterministic policy/private outputs were regenerated; Michele remains the independent challenger and a post-repair review is not claimed here.
+
+## Response to Michele's latest independent review
+
+At commit `3d99e619e63d3b02358b2181329f3c74d85e5e10`, Michele independently demonstrated four accepted adversarial mutations: an unjournaled successful deposit, a mismatched successful comparison pair outside the fixed required list, an unjournaled target operation ID on a financial account, and corrupted held-out financial identity. She found no new latency or redeployment-family defect.
+
+Schema version 5 closes those gaps without changing any reference constraint. All comparison IDs are globally paired and compared; successful or operation-bearing candidate POSTs and journals account for each other exactly once; snapshot operation IDs are globally attributable; and every held-out financial account is reconciled to independent identity, replayed balance, and the complete ordered operation list. Private regressions cover all four mutations plus the existing orphan/duplicate checks. Michele remains the designated challenger; this authoring record does not claim her still-pending post-repair re-review.

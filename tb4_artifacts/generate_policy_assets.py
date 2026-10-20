@@ -173,3 +173,20 @@ workloads["candidate_evidence_bindings"] = {
 }
 for name,obj in (("migration_contract.json",contract),("public_workloads.json",workloads),("rest_serialization_contract.json",serialization),("candidate_evidence.schema.json",schema),("candidate_backend_matrix.json",matrix)):
     dump(name,obj)
+
+# Schema-v5 cross-record requirements cannot be expressed by JSON Schema alone.
+# Keep their public contract deterministic alongside the generated structural schema.
+_accountability_marker="\n## Schema v5 bidirectional evidence accounting\n"
+_readme_path=ROOT/"README.md"
+_readme_base=_readme_path.read_text().split(_accountability_marker,1)[0].rstrip()+"\n"
+_readme_path.write_text(_readme_base+_accountability_marker+"""
+
+The independent verifier closes every evidence link in both directions:
+
+- Every non-null `comparison_id` must identify exactly one source trace and one candidate trace. Their method, route, request account/amount, complete status, and complete body must agree. This applies to every captured comparison, not only the named mandatory lifecycle cases.
+- Every successful candidate `POST` must carry operation and idempotency IDs and map to exactly one semantically matching journal entry. Every operation-bearing candidate `POST` (including expected domain failures) must also map exactly once; journals may not share request traces.
+- Every direct MongoDB `appliedOperationIds` value must name an independently replayed, applied journal operation for that same account. The final list must be complete and ordered, with no orphan or duplicate snapshot operations.
+- For every held-out financial account, the final direct MongoDB document must exactly match independent initial truth plus replay: account number, full name, score, final balance, and complete applied-operation ID list.
+
+Duplicate/orphan trace IDs, comparison sides, journal links, account documents, and snapshot operation IDs are invalid evidence rather than ignorable telemetry.
+""")
