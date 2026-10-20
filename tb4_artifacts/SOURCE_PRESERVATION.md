@@ -21,3 +21,10 @@ Family distinctness ledger
 3. `durable-profile-cutover` primarily fails on container replacement, storage selection, volume retention, network isolation, or source connection attempts.
 
 They reuse one evidence format but are not reworded or narrowed duplicates. Michele's post-repair independent re-review remains pending; this record does not claim that review occurred.
+
+Author repair after Michele's second review
+
+- MIG-1/MIG-2 evidence now binds every journal operation to the operation-specific public route and independently captured request account, amount, operation ID, and idempotency ID. Creation links its generated account through the native `201` response.
+- Every acknowledged creation and every account visible through a successful candidate GET is now matched field-for-field to the final direct MongoDB snapshot, including the exact applied-operation ID set.
+- Private regressions corrupt an HTTP-visible final document and swap applied deposit/withdraw request links; both must be rejected.
+- Michele remains the designated independent challenger; post-repair re-review is pending and is not claimed here.

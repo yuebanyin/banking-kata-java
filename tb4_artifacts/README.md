@@ -9,3 +9,9 @@ Lifecycle truth follows the native DTO/controller contract: successful open resp
 Permanent cutover means actual application-container replacement, not a process restart. The evidence includes destroy/create events with distinct container IDs, stable MongoDB volume mounts, PostgreSQL network-denial inspection, effective profiles and selected storage bean, a connection observer interval and attempt log, and old/new reads plus a write in the replacement container.
 
 The three contract families are materially distinct: lifecycle serialization/reconciliation, financial linearizability/exactly-once effects, and durable backend/configuration/deployment selection. They share the same strict traffic and latency envelope.
+
+## Evidence linkage and final reconciliation
+
+Candidate evidence uses schema version 3. Every HTTP trace records nullable captured request account, amount, operation ID, and idempotency key fields. Each acknowledged journal row must link to a candidate POST on the route for its operation kind. Financial rows must match all four captured request values; account creation must match its IDs and the generated `201` response account number.
+
+The final snapshot must be a direct MongoDB query. It must contain every acknowledged creation and every account returned by a successful candidate GET. For each such account, `accountNumber`, `fullName`, `balance`, and `score` must equal its latest view before that snapshot, while `appliedOperationIds` must exactly equal its acknowledged applied journal effects.

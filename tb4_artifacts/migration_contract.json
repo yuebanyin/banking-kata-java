@@ -15,6 +15,10 @@
       "profile": "mongodb"
     }
   },
+  "evidence_binding_contract": {
+    "journal_to_http": "Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. An account creation links its generated account number through the 201 response.",
+    "lifecycle_to_mongodb": "The final direct MongoDB snapshot contains every acknowledged creation and every account returned by a successful candidate GET. fullName, balance, and score equal the latest pre-snapshot GET, and appliedOperationIds exactly equal the acknowledged applied journal effects for each visible account."
+  },
   "fixture_seed": 41031,
   "invariants": [
     {
@@ -27,7 +31,7 @@
       "invariant_id": "MIG-1",
       "preserved": true,
       "requirement": "Continuously invoke lifecycle and financial HTTP reads and writes while PostgreSQL-to-MongoDB backfill and cutover intervals are active.",
-      "validation": "Both read and write request intervals overlap each active migration interval; traffic spans the complete migration with no gap above 1000 ms; every acknowledged write is reconciled."
+      "validation": "Both read and write request intervals overlap each active migration interval; traffic spans the complete migration with no gap above 1000 ms; every acknowledged write is bound to its external request and reconciled."
     },
     {
       "evidence": [
@@ -38,7 +42,7 @@
       "invariant_id": "MIG-2",
       "preserved": true,
       "requirement": "Preserve complete source HTTP status/body behavior and linearizable, exactly-once balances without stale, lost, or duplicate effects.",
-      "validation": "Compare recursively exact JSON bodies, replay held-out operations independently, enforce real-time order, and reconcile resulting documents and idempotency keys."
+      "validation": "Compare recursively exact JSON bodies, replay held-out operations independently, enforce real-time order, and reconcile every acknowledged/HTTP-visible lifecycle document field and all resulting balances and idempotency keys."
     },
     {
       "evidence": [

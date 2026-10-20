@@ -1,4 +1,35 @@
 {
+  "candidate_evidence_bindings": {
+    "create_match": [
+      "operation_id",
+      "idempotency_key",
+      "201 body.accountNumber"
+    ],
+    "final_lifecycle_match": [
+      "accountNumber",
+      "fullName",
+      "balance",
+      "score",
+      "appliedOperationIds"
+    ],
+    "financial_request_match": [
+      "account_number",
+      "amount",
+      "operation_id",
+      "idempotency_key"
+    ],
+    "required_http_request_fields": [
+      "request_account_number",
+      "request_amount",
+      "request_operation_id",
+      "request_idempotency_key"
+    ],
+    "route_by_journal_kind": {
+      "create": "POST /bank-accounts",
+      "deposit": "POST /bank-accounts/{accountNumber}/deposits",
+      "withdraw": "POST /bank-accounts/{accountNumber}/withdrawals"
+    }
+  },
   "contract_families": [
     {
       "edge_cases": [

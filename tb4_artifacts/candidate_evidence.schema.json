@@ -200,6 +200,31 @@
             "target_only_restart"
           ]
         },
+        "request_account_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_amount": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "request_idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request_operation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "route_template": {
           "enum": [
             "/bank-accounts",
@@ -239,7 +264,11 @@
         "status",
         "body",
         "transport_error",
-        "expected_domain_error"
+        "expected_domain_error",
+        "request_account_number",
+        "request_amount",
+        "request_operation_id",
+        "request_idempotency_key"
       ],
       "type": "object"
     },
@@ -464,7 +493,7 @@
       "type": "string"
     },
     "schema_version": {
-      "const": 2
+      "const": 3
     }
   },
   "required": [

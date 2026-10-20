@@ -32,11 +32,11 @@ contract = {
   {"invariant_id":"MIG-1","preserved":True,
    "requirement":"Continuously invoke lifecycle and financial HTTP reads and writes while PostgreSQL-to-MongoDB backfill and cutover intervals are active.",
    "evidence":["timestamped migration intervals","linked HTTP trace","acknowledged-operation journal","direct MongoDB reconciliation"],
-   "validation":"Both read and write request intervals overlap each active migration interval; traffic spans the complete migration with no gap above 1000 ms; every acknowledged write is reconciled."},
+   "validation":"Both read and write request intervals overlap each active migration interval; traffic spans the complete migration with no gap above 1000 ms; every acknowledged write is bound to its external request and reconciled."},
   {"invariant_id":"MIG-2","preserved":True,
    "requirement":"Preserve complete source HTTP status/body behavior and linearizable, exactly-once balances without stale, lost, or duplicate effects.",
    "evidence":["paired source/candidate HTTP observations","acknowledged-operation journal","direct MongoDB snapshot"],
-   "validation":"Compare recursively exact JSON bodies, replay held-out operations independently, enforce real-time order, and reconcile resulting documents and idempotency keys."},
+   "validation":"Compare recursively exact JSON bodies, replay held-out operations independently, enforce real-time order, and reconcile every acknowledged/HTTP-visible lifecycle document field and all resulting balances and idempotency keys."},
   {"invariant_id":"MIG-3","preserved":True,
    "requirement":"Keep every external request below 5000 ms and each method/route post-cutover nearest-rank p95 no more than 10 ms above its source p95.",
    "evidence":["HTTP trace IDs in route-specific baseline and post-cutover partitions"],
@@ -146,5 +146,28 @@ matrix = {"schema_version":2,"candidate_files":{
  "native_capabilities":["JPA/PostgreSQL source adapter","MongoDB target adapter","lifecycle REST controller","deposit and withdrawal use cases","Docker service topology"],
  "required_additions_not_present_at_baseline":["migration coordinator/backfill","dual-write or change capture","public deposit route","public withdrawal route","fresh-container cutover harness","structured evidence collector"]}
 
+# Candidate evidence is self-contained: every journal row is bound to captured
+# request values, and lifecycle documents are reconciled field-for-field.
+request_fields = ["request_account_number", "request_amount", "request_operation_id", "request_idempotency_key"]
+http_schema = schema["$defs"]["http"]
+http_schema["required"].extend(request_fields)
+http_schema["properties"].update({
+ "request_account_number":{"type":["string","null"]},
+ "request_amount":{"type":["integer","null"],"minimum":0},
+ "request_operation_id":{"type":["string","null"]},
+ "request_idempotency_key":{"type":["string","null"]},
+})
+schema["properties"]["schema_version"]["const"] = 3
+contract["evidence_binding_contract"] = {
+ "journal_to_http":"Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. An account creation links its generated account number through the 201 response.",
+ "lifecycle_to_mongodb":"The final direct MongoDB snapshot contains every acknowledged creation and every account returned by a successful candidate GET. fullName, balance, and score equal the latest pre-snapshot GET, and appliedOperationIds exactly equal the acknowledged applied journal effects for each visible account."
+}
+workloads["candidate_evidence_bindings"] = {
+ "required_http_request_fields":request_fields,
+ "route_by_journal_kind":{"create":"POST /bank-accounts","deposit":"POST /bank-accounts/{accountNumber}/deposits","withdraw":"POST /bank-accounts/{accountNumber}/withdrawals"},
+ "financial_request_match":["account_number","amount","operation_id","idempotency_key"],
+ "create_match":["operation_id","idempotency_key","201 body.accountNumber"],
+ "final_lifecycle_match":["accountNumber","fullName","balance","score","appliedOperationIds"]
+}
 for name,obj in (("migration_contract.json",contract),("public_workloads.json",workloads),("rest_serialization_contract.json",serialization),("candidate_evidence.schema.json",schema),("candidate_backend_matrix.json",matrix)):
     dump(name,obj)
