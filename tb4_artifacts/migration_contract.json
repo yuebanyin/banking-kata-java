@@ -1,13 +1,14 @@
 {
   "backend_contract": {
+    "fresh_container_required": true,
     "heterogeneous": true,
-    "persist_target_volume_across_restart": true,
+    "persist_target_volume_across_container_replacement": true,
     "source": {
       "adapter": "jpa",
       "engine": "postgresql",
       "profile": "jpa"
     },
-    "source_unavailable_after_restart": true,
+    "source_network_denied_after_cutover": true,
     "target": {
       "adapter": "spring-data-mongodb",
       "engine": "mongodb",
@@ -18,74 +19,63 @@
   "invariants": [
     {
       "evidence": [
-        "phase-tagged request trace",
-        "acknowledged-write reconciliation",
-        "overlapping operation intervals"
+        "timestamped migration intervals",
+        "linked HTTP trace",
+        "acknowledged-operation journal",
+        "direct MongoDB reconciliation"
       ],
       "invariant_id": "MIG-1",
       "preserved": true,
-      "requirement": "Run source reads and writes before and during heterogeneous backfill and cutover without stopping customer traffic."
+      "requirement": "Continuously invoke lifecycle and financial HTTP reads and writes while PostgreSQL-to-MongoDB backfill and cutover intervals are active.",
+      "validation": "Both read and write request intervals overlap each active migration interval; traffic spans the complete migration with no gap above 1000 ms; every acknowledged write is reconciled."
     },
     {
       "evidence": [
-        "source baseline observations",
-        "candidate observations",
-        "independent target state"
+        "paired source/candidate HTTP observations",
+        "acknowledged-operation journal",
+        "direct MongoDB snapshot"
       ],
       "invariant_id": "MIG-2",
       "preserved": true,
-      "requirement": "Match source status and complete parsed response body, with no unexpected error, stale read, lost update, or duplicate effect."
+      "requirement": "Preserve complete source HTTP status/body behavior and linearizable, exactly-once balances without stale, lost, or duplicate effects.",
+      "validation": "Compare recursively exact JSON bodies, replay held-out operations independently, enforce real-time order, and reconcile resulting documents and idempotency keys."
     },
     {
       "evidence": [
-        "per-request latency trace",
-        "endpoint-partitioned baseline",
-        "endpoint-partitioned post-cutover samples"
+        "HTTP trace IDs in route-specific baseline and post-cutover partitions"
       ],
       "invariant_id": "MIG-3",
       "preserved": true,
-      "requirement": "Keep every request below 5000 ms and nearest-rank p95 after cutover no more than 10 ms above source baseline for each method-and-route template."
+      "requirement": "Keep every external request below 5000 ms and each method/route post-cutover nearest-rank p95 no more than 10 ms above its source p95.",
+      "validation": "Recompute duration and p95 from at least 20 real trace rows for each of all four public routes, including deposit and withdrawal."
     },
     {
       "evidence": [
-        "source-denied restart probe",
-        "old-and-new account reads",
-        "source connection-attempt count"
+        "container event stream",
+        "network inspection",
+        "effective profiles and bean report",
+        "connection-attempt log",
+        "restart HTTP probes",
+        "before/after direct snapshots"
       ],
       "invariant_id": "MIG-4",
       "preserved": true,
-      "requirement": "Start a fresh application process with the source network-denied and read and write persisted target data without fallback or source attempts."
+      "requirement": "Replace the application container, retain the MongoDB volume, deny PostgreSQL networking, and operate solely on MongoDB without source connection attempts.",
+      "validation": "Require distinct old/new container IDs and destroy/create events, identical target volume identity, PostgreSQL deny evidence, MongoDB-only effective storage, complete observed connection interval with zero PostgreSQL attempts, and old/new state plus writes after replacement."
     }
   ],
   "limits": {
     "latency_partition": "method-and-route-template",
+    "maximum_traffic_gap_ms": 1000,
+    "minimum_samples_per_partition_and_period": 20,
     "p95_method": "nearest-rank",
     "post_cutover_p95_delta_ms": 10,
     "request_timeout_ms": 5000,
     "stale_or_inconsistent_reads": 0,
     "unexpected_request_failures": 0
   },
-  "schema_version": 1,
-  "trace_schema": {
-    "exact_body_rule": "recursive JSON value equality with no ignored fields",
-    "expected_domain_errors": "count as successful customer requests only when status and body exactly match the source baseline",
-    "phases": [
-      "source_baseline",
-      "live_backfill",
-      "cutover",
-      "target_only",
-      "target_only_restart"
-    ],
-    "required_request_fields": [
-      "request_id",
-      "phase",
-      "method",
-      "route_template",
-      "started_ms",
-      "completed_ms",
-      "status",
-      "body"
-    ],
-    "write_ack_rule": "a completed successful mutation must be present in independent target state and every causally later read"
-  }
+  "required_evidence_files": {
+    "candidate_output": "one JSON document conforming to candidate_evidence.schema.json"
+  },
+  "schema_version": 2
 }

@@ -1,0 +1,482 @@
+{
+  "$defs": {
+    "account": {
+      "additionalProperties": false,
+      "properties": {
+        "accountNumber": {
+          "type": "string"
+        },
+        "appliedOperationIds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "balance": {
+          "type": "integer"
+        },
+        "fullName": {
+          "type": "string"
+        },
+        "score": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountNumber",
+        "fullName",
+        "balance",
+        "score",
+        "appliedOperationIds"
+      ],
+      "type": "object"
+    },
+    "connection": {
+      "additionalProperties": false,
+      "properties": {
+        "at_ms": {
+          "type": "integer"
+        },
+        "container_id": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "engine": {
+          "enum": [
+            "postgresql",
+            "mongodb",
+            "other"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "connected",
+            "denied",
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "at_ms",
+        "container_id",
+        "engine",
+        "destination",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "deployment": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_attempt_log": {
+          "items": {
+            "$ref": "#/$defs/connection"
+          },
+          "type": "array"
+        },
+        "connection_observer": {
+          "type": "object"
+        },
+        "container_events": {
+          "items": {
+            "$ref": "#/$defs/event"
+          },
+          "minItems": 2,
+          "type": "array"
+        },
+        "effective_configuration": {
+          "type": "object"
+        },
+        "image_digest": {
+          "type": "string"
+        },
+        "new_container_id": {
+          "type": "string"
+        },
+        "old_container_id": {
+          "type": "string"
+        },
+        "postgresql_network_inspect": {
+          "type": "object"
+        },
+        "restart_trace_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 4,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "target_mount_after": {
+          "type": "object"
+        },
+        "target_mount_before": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "old_container_id",
+        "new_container_id",
+        "image_digest",
+        "container_events",
+        "target_mount_before",
+        "target_mount_after",
+        "postgresql_network_inspect",
+        "effective_configuration",
+        "connection_observer",
+        "connection_attempt_log",
+        "restart_trace_ids"
+      ],
+      "type": "object"
+    },
+    "event": {
+      "additionalProperties": false,
+      "properties": {
+        "at_ms": {
+          "type": "integer"
+        },
+        "container_id": {
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "destroy",
+            "create"
+          ]
+        },
+        "image_digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "container_id",
+        "at_ms",
+        "image_digest"
+      ],
+      "type": "object"
+    },
+    "http": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {},
+        "comparison_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "completed_ms": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "container_id": {
+          "type": "string"
+        },
+        "expected_domain_error": {
+          "type": "boolean"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST"
+          ]
+        },
+        "origin": {
+          "enum": [
+            "source",
+            "candidate"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "source_baseline",
+            "live_backfill",
+            "cutover",
+            "target_only",
+            "target_only_restart"
+          ]
+        },
+        "route_template": {
+          "enum": [
+            "/bank-accounts",
+            "/bank-accounts/{accountNumber}",
+            "/bank-accounts/{accountNumber}/deposits",
+            "/bank-accounts/{accountNumber}/withdrawals"
+          ]
+        },
+        "started_ms": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "maximum": 599,
+          "minimum": 100,
+          "type": "integer"
+        },
+        "trace_id": {
+          "type": "string"
+        },
+        "transport_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "trace_id",
+        "comparison_id",
+        "origin",
+        "phase",
+        "method",
+        "route_template",
+        "started_ms",
+        "completed_ms",
+        "status",
+        "body",
+        "transport_error",
+        "expected_domain_error"
+      ],
+      "type": "object"
+    },
+    "interval": {
+      "additionalProperties": false,
+      "properties": {
+        "completed_ms": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "interval_id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "backfill",
+            "cutover"
+          ]
+        },
+        "started_ms": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "interval_id",
+        "kind",
+        "started_ms",
+        "completed_ms"
+      ],
+      "type": "object"
+    },
+    "journal": {
+      "additionalProperties": false,
+      "properties": {
+        "account_number": {
+          "type": "string"
+        },
+        "acknowledged": {
+          "type": "boolean"
+        },
+        "amount": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completed_ms": {
+          "type": "integer"
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "create",
+            "deposit",
+            "withdraw"
+          ]
+        },
+        "linearization_index": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation_id": {
+          "type": "string"
+        },
+        "request_trace_id": {
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "applied",
+            "duplicate_ignored",
+            "account_not_found",
+            "invalid_amount",
+            "insufficient_funds"
+          ]
+        },
+        "started_ms": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation_id",
+        "idempotency_key",
+        "request_trace_id",
+        "kind",
+        "account_number",
+        "amount",
+        "started_ms",
+        "completed_ms",
+        "linearization_index",
+        "result",
+        "acknowledged"
+      ],
+      "type": "object"
+    },
+    "partition": {
+      "additionalProperties": false,
+      "properties": {
+        "baseline_trace_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 20,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST"
+          ]
+        },
+        "post_cutover_trace_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 20,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "route_template": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "route_template",
+        "baseline_trace_ids",
+        "post_cutover_trace_ids"
+      ],
+      "type": "object"
+    },
+    "snapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "accounts": {
+          "items": {
+            "$ref": "#/$defs/account"
+          },
+          "type": "array"
+        },
+        "captured_ms": {
+          "type": "integer"
+        },
+        "engine": {
+          "const": "mongodb"
+        },
+        "purpose": {
+          "enum": [
+            "pre_replacement",
+            "post_replacement",
+            "final_reconciliation"
+          ]
+        },
+        "query": {
+          "const": "direct_mongodb_query"
+        },
+        "snapshot_id": {
+          "type": "string"
+        },
+        "volume_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "snapshot_id",
+        "purpose",
+        "captured_ms",
+        "engine",
+        "query",
+        "volume_id",
+        "accounts"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "candidate_evidence.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "deployment_evidence": {
+      "$ref": "#/$defs/deployment"
+    },
+    "http_trace": {
+      "items": {
+        "$ref": "#/$defs/http"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "latency_partitions": {
+      "items": {
+        "$ref": "#/$defs/partition"
+      },
+      "minItems": 4,
+      "type": "array"
+    },
+    "migration_intervals": {
+      "items": {
+        "$ref": "#/$defs/interval"
+      },
+      "minItems": 2,
+      "type": "array"
+    },
+    "mongo_snapshots": {
+      "items": {
+        "$ref": "#/$defs/snapshot"
+      },
+      "minItems": 2,
+      "type": "array"
+    },
+    "operation_journal": {
+      "items": {
+        "$ref": "#/$defs/journal"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "run_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2
+    }
+  },
+  "required": [
+    "schema_version",
+    "run_id",
+    "migration_intervals",
+    "http_trace",
+    "operation_journal",
+    "mongo_snapshots",
+    "latency_partitions",
+    "deployment_evidence"
+  ],
+  "title": "Banking cutover candidate evidence",
+  "type": "object"
+}

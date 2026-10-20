@@ -1,15 +1,11 @@
-# Banking live-cutover fixture baseline
+# Banking live-cutover evidence baseline
 
-These deterministic fixtures describe inputs and evidence boundaries; they do not implement a migration. The source is the repository's JPA/PostgreSQL account storage and the heterogeneous target is its MongoDB account storage.
+These fresh deterministic assets define evidence inputs and validation boundaries; they do not implement a migration. The heterogeneous cutover is from the repository's JPA/PostgreSQL storage to its Spring Data MongoDB storage.
 
-All future contracts preserve four rules together: traffic overlaps backfill and cutover; status and complete JSON bodies match controlled source behavior with no stale/lost/duplicate effects; every request is below 5000 ms and each method-and-route p95 is at most 10 ms over its own baseline; and a fresh application process works from persisted target state while PostgreSQL is network-denied.
+A valid implementation must keep lifecycle and financial HTTP requests flowing across measured backfill and cutover intervals. It must provide paired source/candidate HTTP observations, an acknowledged-operation journal, and independently queried MongoDB snapshots. Supplying precomputed booleans is not evidence. Every request remains below 5000 ms, and nearest-rank p95 is recomputed separately for each method/route from at least 20 linked source and post-cutover trace rows. Deposit and withdrawal must therefore become public HTTP routes.
 
-The fixtures intentionally expose three non-duplicate contract families:
+Lifecycle truth follows the native DTO/controller contract: successful open responses contain only `accountNumber`; successful views contain `accountNumber`, `fullName`, integer `balance`, and enum-string `score`; a missing-account GET has an empty JSON body represented as `null`. Missing-customer and blacklisted-customer requests are both mandatory paired observations. Because their current exceptions are propagated outside the controller, the harness captures the complete source HTTP status/body rather than inventing a response DTO, then requires recursive equality after routing changes.
 
-- `account-lifecycle-http` is about account creation/lookup parity and copy reconciliation.
-- `funds-linearizability` is about same-account financial contention and exactly-once effects; public GET observations and latency probes remain required.
-- `durable-profile-cutover` is about effective adapter selection, source isolation, and deployment permanence; HTTP parity and latency probes remain required but are not its primary oracle.
+Permanent cutover means actual application-container replacement, not a process restart. The evidence includes destroy/create events with distinct container IDs, stable MongoDB volume mounts, PostgreSQL network-denial inspection, effective profiles and selected storage bean, a connection observer interval and attempt log, and old/new reads plus a write in the replacement container.
 
-Expected domain errors are valid only when their status and entire body equal the controlled source baseline. Transport errors, timeouts, unexpected 5xx responses, stale reads, and acknowledged writes absent from MongoDB are failures. Target persistence is retained across the fresh application restart; the target volume is not reset.
-
-`generate_policy_assets.py` is byte-deterministic for seed 41031. `check_policy_assets.py` validates the fixture relationships and confirms that named native candidate seams still exist. No file in this directory is a migration implementation.
+The three contract families are materially distinct: lifecycle serialization/reconciliation, financial linearizability/exactly-once effects, and durable backend/configuration/deployment selection. They share the same strict traffic and latency envelope.

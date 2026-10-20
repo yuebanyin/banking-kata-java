@@ -1,55 +1,46 @@
 #!/usr/bin/env python3
-"""Validate policy fixtures and their candidate-native seams."""
-from __future__ import annotations
-
-import json
+"""Validate policy fixtures, schemas, family distinctness, and native REST truth."""
+import json, re
 from pathlib import Path
-
-ART = Path(__file__).resolve().parent
-REPO = ART.parent
-
-
-def load(name: str):
-    return json.loads((ART / name).read_text(encoding="utf-8"))
-
-
-contract = load("migration_contract.json")
-workloads = load("public_workloads.json")
-matrix = load("candidate_backend_matrix.json")
-assert contract["schema_version"] == workloads["schema_version"] == matrix["schema_version"] == 1
-assert contract["fixture_seed"] == workloads["fixture_seed"] == 41031
-assert contract["backend_contract"]["heterogeneous"] is True
-assert contract["backend_contract"]["source"]["engine"] != contract["backend_contract"]["target"]["engine"]
-limits = contract["limits"]
-assert limits == {
-    "latency_partition": "method-and-route-template",
-    "p95_method": "nearest-rank",
-    "post_cutover_p95_delta_ms": 10,
-    "request_timeout_ms": 5000,
-    "stale_or_inconsistent_reads": 0,
-    "unexpected_request_failures": 0,
-}
-invariants = contract["invariants"]
-assert [row["invariant_id"] for row in invariants] == ["MIG-1", "MIG-2", "MIG-3", "MIG-4"]
-assert all(row["preserved"] is True and row["evidence"] for row in invariants)
-families = {row["family_id"]: row for row in workloads["contract_families"]}
-assert set(families) == {"account-lifecycle-http", "funds-linearizability", "durable-profile-cutover"}
-assert len({row["primary_oracle"] for row in families.values()}) == 3
-funds = families["funds-linearizability"]
-assert any(len(wave["operations"]) >= 2 for wave in funds["waves"])
-assert {op["kind"] for wave in funds["waves"] for op in wave["operations"]} == {"deposit", "withdraw", "read"}
-phases = set(contract["trace_schema"]["phases"])
-assert {op["phase"] for op in families["account-lifecycle-http"]["operations"]} <= phases
-assert {p["phase"] for p in families["durable-profile-cutover"]["probes"]} <= phases
-assert "target_only_restart" in {p["phase"] for p in families["durable-profile-cutover"]["probes"]}
-
-for relative in (matrix["candidate_files"]["storage_port"], matrix["candidate_files"]["startup_config"], matrix["candidate_files"]["compose_file"]):
-    assert (REPO / relative).is_file(), relative
-for filename in ("BankAccountController.java", "JpaBankAccountStorage.java", "MongoBankAccountStorage.java", "DepositFundsUseCase.java", "WithdrawFundsUseCase.java"):
-    matches = list(REPO.rglob(filename))
-    assert len(matches) == 1, (filename, matches)
-storage = (REPO / matrix["candidate_files"]["storage_port"]).read_text(encoding="utf-8")
-assert all(token in storage for token in ("find(", "add(", "update("))
-controller = next(REPO.rglob("BankAccountController.java")).read_text(encoding="utf-8")
-assert all(token in controller for token in ("PostMapping", "GetMapping", "bank-accounts"))
-print("policy fixtures valid: 4 invariants, 3 distinct families, native seams resolved")
+A=Path(__file__).resolve().parent; R=A.parent
+load=lambda n: json.loads((A/n).read_text(encoding="utf-8"))
+c=load("migration_contract.json"); w=load("public_workloads.json"); s=load("candidate_evidence.schema.json"); r=load("rest_serialization_contract.json"); m=load("candidate_backend_matrix.json")
+assert c["schema_version"]==w["schema_version"]==m["schema_version"]==2
+assert c["fixture_seed"]==w["fixture_seed"]==41031
+assert c["backend_contract"]["source"]["engine"] != c["backend_contract"]["target"]["engine"]
+assert c["backend_contract"]["fresh_container_required"] is True
+assert c["limits"] == {"latency_partition":"method-and-route-template","maximum_traffic_gap_ms":1000,"minimum_samples_per_partition_and_period":20,"p95_method":"nearest-rank","post_cutover_p95_delta_ms":10,"request_timeout_ms":5000,"stale_or_inconsistent_reads":0,"unexpected_request_failures":0}
+assert [x["invariant_id"] for x in c["invariants"]]==["MIG-1","MIG-2","MIG-3","MIG-4"]
+assert all(x["preserved"] is True and x["evidence"] and x["validation"] for x in c["invariants"])
+f={x["family_id"]:x for x in w["contract_families"]}
+assert set(f)=={"account-lifecycle-http","funds-linearizability","durable-profile-cutover"}
+assert len({x["primary_oracle"] for x in f.values()})==3
+life=f["account-lifecycle-http"]["observations"]
+assert {x.get("customer_case") for x in life} >= {"eligible","missing","blacklisted"}
+assert any(x.get("account_case")=="missing" for x in life)
+funds=f["funds-linearizability"]
+assert {"POST /bank-accounts/{accountNumber}/deposits","POST /bank-accounts/{accountNumber}/withdrawals"} <= set(funds["required_public_routes"])
+assert {o["kind"] for wave in funds["waves"] for o in wave["operations"]}=={"deposit","withdraw","read"}
+assert s["type"]=="object" and s["additionalProperties"] is False
+assert set(s["required"])=={"schema_version","run_id","migration_intervals","http_trace","operation_journal","mongo_snapshots","latency_partitions","deployment_evidence"}
+assert s["$defs"]["partition"]["properties"]["baseline_trace_ids"]["minItems"]==20
+assert r["responses"]["open_success"]["body"]=={"accountNumber":"string"}
+assert r["responses"]["view_success"]["body"]=={"accountNumber":"string","fullName":"string","balance":"integer","score":"enum string"}
+assert r["responses"]["view_missing"]["body"] is None
+for rel in m["candidate_files"].values(): assert (R/rel).is_file(), rel
+open_dto=(R/m["candidate_files"]["open_response"]).read_text()
+view_dto=(R/m["candidate_files"]["view_response"]).read_text()
+controller=(R/m["candidate_files"]["controller"]).read_text()
+pact=(R/m["candidate_files"]["consumer_contract"]).read_text()
+# Focused native serialization validation: Lombok/Jackson property declarations and controller statuses.
+assert re.findall(r"private\s+\w+\s+(\w+);", open_dto)==["accountNumber"]
+assert re.findall(r"private\s+\w+\s+(\w+);", view_dto)==["accountNumber","fullName","balance","score"]
+assert "private int balance;" in view_dto and "private Score score;" in view_dto
+assert "HttpStatus.CREATED" in controller and "HttpStatus.OK" in controller and "HttpStatus.NOT_FOUND" in controller
+assert "new ResponseEntity<>(HttpStatus.NOT_FOUND)" in controller
+assert "status(HttpStatusValue.NOT_FOUND)" in pact and "ACCOUNT_NUMBER_FIELD" in pact and "FULL_NAME_FIELD" in pact
+text=(A/"SOURCE_PRESERVATION.md").read_text()
+assert text.count("MIG-1 (`preserved=true`)")==1 and text.count("MIG-2 (`preserved=true`)")==1
+assert text.count("MIG-3 (`preserved=true`)")==1 and text.count("MIG-4 (`preserved=true`)")==1
+assert "contextual_constraint_changes: []" in text
+print("policy assets valid: native lifecycle serialization, evidence schema, 4 preserved invariants, 3 distinct families")

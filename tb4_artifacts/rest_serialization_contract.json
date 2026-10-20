@@ -1,0 +1,41 @@
+{
+  "confirmed_native_sources": [
+    "core/src/main/java/com/optivem/kata/banking/core/ports/driver/accounts/openaccount/OpenAccountResponse.java",
+    "core/src/main/java/com/optivem/kata/banking/core/ports/driver/accounts/viewaccount/ViewAccountResponse.java",
+    "adapter-restapi-spring/src/main/java/com/optivem/kata/banking/adapter/driver/restapi/spring/controllers/BankAccountController.java",
+    "adapter-restapi-spring/src/test/java/com/optivem/kata/banking/adapter/driver/restapi/spring/BankingConsumerContractTest.java"
+  ],
+  "note": "Opening dates, customer IDs, and string balances are not fields in native lifecycle response DTOs.",
+  "responses": {
+    "blacklisted_customer": {
+      "comparison": "capture complete native source HTTP status/body, then require exact candidate equality",
+      "required_observation": true
+    },
+    "missing_customer": {
+      "comparison": "capture complete native source HTTP status/body, then require exact candidate equality",
+      "required_observation": true
+    },
+    "open_success": {
+      "additional_properties": false,
+      "body": {
+        "accountNumber": "string"
+      },
+      "status": 201
+    },
+    "view_missing": {
+      "body": null,
+      "status": 404
+    },
+    "view_success": {
+      "additional_properties": false,
+      "body": {
+        "accountNumber": "string",
+        "balance": "integer",
+        "fullName": "string",
+        "score": "enum string"
+      },
+      "status": 200
+    }
+  },
+  "schema_version": 1
+}

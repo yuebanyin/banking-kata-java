@@ -1,24 +1,27 @@
 {
-  "baseline_status": {
-    "atomic_financial_storage_contract_present": false,
-    "dual_write_or_cdc_present": false,
-    "migration_coordinator_present": false,
-    "target_only_profile_verified": false
-  },
   "candidate_files": {
     "compose_file": "docker-compose.yml",
-    "rest_controller_name": "BankAccountController.java",
-    "source_adapter_name": "JpaBankAccountStorage.java",
+    "consumer_contract": "adapter-restapi-spring/src/test/java/com/optivem/kata/banking/adapter/driver/restapi/spring/BankingConsumerContractTest.java",
+    "controller": "adapter-restapi-spring/src/main/java/com/optivem/kata/banking/adapter/driver/restapi/spring/controllers/BankAccountController.java",
+    "open_response": "core/src/main/java/com/optivem/kata/banking/core/ports/driver/accounts/openaccount/OpenAccountResponse.java",
     "startup_config": "startup/src/main/resources/application.yml",
     "storage_port": "core/src/main/java/com/optivem/kata/banking/core/ports/driven/BankAccountStorage.java",
-    "target_adapter_name": "MongoBankAccountStorage.java"
+    "view_response": "core/src/main/java/com/optivem/kata/banking/core/ports/driver/accounts/viewaccount/ViewAccountResponse.java"
   },
-  "collection_boundaries": [
-    "HTTP status/body/latency trace partitioned by method and route template",
-    "acknowledged mutation journal with stable operation identifiers",
-    "independent MongoDB account snapshot",
-    "effective Spring profile and selected BankAccountStorage bean",
-    "source-denied fresh-process connection and request log"
+  "native_capabilities": [
+    "JPA/PostgreSQL source adapter",
+    "MongoDB target adapter",
+    "lifecycle REST controller",
+    "deposit and withdrawal use cases",
+    "Docker service topology"
   ],
-  "schema_version": 1
+  "required_additions_not_present_at_baseline": [
+    "migration coordinator/backfill",
+    "dual-write or change capture",
+    "public deposit route",
+    "public withdrawal route",
+    "fresh-container cutover harness",
+    "structured evidence collector"
+  ],
+  "schema_version": 2
 }
