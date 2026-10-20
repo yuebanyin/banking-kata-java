@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "task_id": "live-database-cutover",
+    "canonical_unique_id": "7z_8UCB0qbD_wGIHvBb5mA/live-database-cutover"
+  },
+  "seed": 41031,
+  "provenance": {
+    "origin": "fresh_candidate_native",
+    "original_eval_content": false,
+    "authoring": "Fresh deterministic banking scenarios authored from the candidate's account, storage-port, Spring-profile, REST, and funds-use-case seams."
+  },
+  "candidate_capability": {
+    "inventory": [
+      "Java 17 Gradle multi-module service with a BankAccountStorage port and fake, JPA, JDBC, MongoDB, and Redis adapters.",
+      "Spring REST account creation and lookup plus native deposit and withdrawal use cases.",
+      "Docker-declared PostgreSQL and MongoDB services and profile-driven persistence selection.",
+      "Native core tests, adapter contracts, controlled generation/time collaborators, and system-test patterns."
+    ],
+    "selected_surfaces": [
+      "Account lifecycle HTTP parity and reconciliation during a JPA/PostgreSQL to MongoDB cutover.",
+      "Same-account deposit/withdraw linearizability and exactly-once target effects under controlled concurrency.",
+      "Spring persistence-profile permanence, source isolation, and target durability across a fresh application process."
+    ],
+    "blockers": []
+  },
+  "semantic_invariants": [
+    {
+      "invariant_id": "MIG-1",
+      "preserved": true,
+      "reference_requirement": "Live heterogeneous database migration while concurrent customer reads and writes continue.",
+      "candidate_mapping": "Use the existing JPA/PostgreSQL source and MongoDB target while phase-tagged account creation, lookup, deposit, withdrawal, and same-account contention overlap live backfill and cutover.",
+      "validation": "Policy checks require distinct engines, overlapping workload waves, acknowledged-write reconciliation, and traces spanning source_baseline, live_backfill, cutover, and target_only phases; private truth replays a reverse-completion funds schedule."
+    },
+    {
+      "invariant_id": "MIG-2",
+      "preserved": true,
+      "reference_requirement": "Exact public status/body behavior with zero failed, stale, lost, duplicated, or inconsistent requests.",
+      "candidate_mapping": "Control account numbers, dates, and customer outcomes; compare every status and complete parsed JSON body; reconcile successful operations against independently queried MongoDB state and a decimal account oracle.",
+      "validation": "The private oracle rejects a body mutation and independently checks missing accounts, exact-balance withdrawal, overdraft rejection, one-cent precision, duplicate operation effects, and final balances."
+    },
+    {
+      "invariant_id": "MIG-3",
+      "preserved": true,
+      "reference_requirement": "Every request stays below five seconds and post-cutover p95 for each endpoint is within ten milliseconds of that endpoint's source baseline.",
+      "candidate_mapping": "Collect each request duration and partition nearest-rank p95 by HTTP method and route template for account creation and lookup, retaining public endpoint probes in all three contract families.",
+      "validation": "Contract constants are exactly 5000 ms and 10 ms; held-out endpoint distributions exercise both the boundary and a latency mutation that the independent oracle rejects."
+    },
+    {
+      "invariant_id": "MIG-4",
+      "preserved": true,
+      "reference_requirement": "The target cutover remains permanent on future fresh-container deployments without source dependence.",
+      "candidate_mapping": "Retain the migrated MongoDB target volume, network-deny PostgreSQL, start a fresh application process, verify old and new accounts and a new write, and require zero source connection attempts or fallback.",
+      "validation": "Deployment probes record the effective BankAccountStorage, source denial, persisted-volume reuse, reads and writes after restart; the private oracle rejects any source connection attempt."
+    }
+  ],
+  "source_preservation": {
+    "independent_challenger": "Michele",
+    "review_scope": "Pre-authoring proposal and invariant mapping review; post-authoring asset inspection and rerun remain required before finalization.",
+    "invariants": [
+      {
+        "invariant_id": "MIG-1",
+        "preserved": true,
+        "reference_requirement": "Live heterogeneous migration under concurrent reads and writes.",
+        "candidate_mapping": "JPA/PostgreSQL to MongoDB with lifecycle and same-account funds traffic overlapping backfill and cutover.",
+        "validation": "Phase-tagged traces, overlap barriers, zero errors, and target reconciliation."
+      },
+      {
+        "invariant_id": "MIG-2",
+        "preserved": true,
+        "reference_requirement": "Exact behavior and zero stale or inconsistent requests.",
+        "candidate_mapping": "Controlled IDs/time/customer outcomes, full status/body comparison, and independent decimal/state replay.",
+        "validation": "Mutation-sensitive private oracle and independent MongoDB snapshot boundary."
+      },
+      {
+        "invariant_id": "MIG-3",
+        "preserved": true,
+        "reference_requirement": "Five-second request ceiling and endpoint-specific p95 within ten milliseconds.",
+        "candidate_mapping": "Method-and-route distributions for all public account endpoints.",
+        "validation": "Nearest-rank per-endpoint checks at the exact 5000 ms and 10 ms limits."
+      },
+      {
+        "invariant_id": "MIG-4",
+        "preserved": true,
+        "reference_requirement": "Permanent target-only fresh deployment.",
+        "candidate_mapping": "Persist target data, deny source networking, and start a fresh app process without fallback.",
+        "validation": "Old/new reads, a new write, effective storage evidence, and zero source attempts."
+      }
+    ],
+    "challenger_review": [
+      {
+        "invariant_id": "MIG-1",
+        "assessment": "Adapter swap alone is not migration; require an evidenced backfill or replication mechanism and sustained same-account traffic through cutover.",
+        "resolution": "The baseline now requires overlap phases, controlled contention, acknowledged-write reconciliation, and zero transport failures rather than treating profiles as a mechanism."
+      },
+      {
+        "invariant_id": "MIG-2",
+        "assessment": "Ordinary GET/POST comparison is insufficient with generated identifiers and time; exact controlled responses and independent target replay are required.",
+        "resolution": "The baseline controls collaborators, compares complete bodies, and includes independent decimal replay and target snapshot boundaries."
+      },
+      {
+        "invariant_id": "MIG-3",
+        "assessment": "Internal operation timing or aggregate throughput cannot replace per-public-endpoint distributions and the exact request ceiling.",
+        "resolution": "The baseline fixes nearest-rank distributions by method and route at 5000 ms and a 10 ms p95 delta, including for non-HTTP-primary families."
+      },
+      {
+        "invariant_id": "MIG-4",
+        "assessment": "A fresh target volume would erase migrated state; use persisted target data with the source stopped or denied and detect fallback attempts.",
+        "resolution": "The deployment contract retains the target volume, starts a fresh application process, checks old and new state, and requires zero source attempts."
+      }
+    ],
+    "contextual_constraint_changes": []
+  },
+  "contextual_constraint_changes": [],
+  "oracle_independence": "The grader-only Python decimal/state oracle is outside the candidate checkout, imports no candidate implementation, uses fresh held-out schedules, and is checked against truth produced by a separate imperative generator plus negative mutations.",
+  "requirements": {
+    "dependencies": [
+      "Python 3 standard library for deterministic JSON generation and semantic checks.",
+      "OpenJDK 17 at /usr/lib/jvm/java-1.17.0-openjdk-amd64.",
+      "Repository Gradle 7.4.1 wrapper and its resolved core-test dependencies."
+    ],
+    "licensing": [
+      "Authored JSON, Markdown, and Python fixture assets are provided under CC0-1.0.",
+      "Candidate Java source remains under the repository MIT license."
+    ],
+    "resources": {
+      "cpu": 2,
+      "memory_gb": 2,
+      "max_bytes": 1000000,
+      "max_seconds": 300,
+      "gpu_required": false
+    }
+  },
+  "generation_commands": [
+    {
+      "command": "TB4_ARTIFACT_SEED=41031 python3 tb4_artifacts/generate_policy_assets.py",
+      "cwd": "repo",
+      "timeout_seconds": 30
+    },
+    {
+      "command": "TB4_ARTIFACT_SEED=41031 python3 cutover_assets/generate_private_assets.py",
+      "cwd": "grader",
+      "timeout_seconds": 30
+    }
+  ],
+  "check_commands": [
+    {
+      "command": "python3 tb4_artifacts/check_policy_assets.py",
+      "cwd": "repo",
+      "timeout_seconds": 30
+    },
+    {
+      "command": "python3 cutover_assets/check_private_assets.py",
+      "cwd": "grader",
+      "timeout_seconds": 30
+    },
+    {
+      "command": "JAVA_HOME=/usr/lib/jvm/java-1.17.0-openjdk-amd64 PATH=/usr/lib/jvm/java-1.17.0-openjdk-amd64/bin:$PATH ./gradlew --no-daemon coreTest",
+      "cwd": "repo",
+      "timeout_seconds": 210
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "tb4_artifacts/README.md",
+      "role": "fixture",
+      "visibility": "policy_visible",
+      "purpose": "Documents the common candidate-native cutover evidence boundary and the distinctness ledger for three later contracts.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "tb4_artifacts/migration_contract.json",
+      "role": "input",
+      "visibility": "policy_visible",
+      "purpose": "Defines engines, phase and trace schemas, exact failure semantics, and latency and restart limits.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "tb4_artifacts/public_workloads.json",
+      "role": "fixture",
+      "visibility": "policy_visible",
+      "purpose": "Supplies deterministic lifecycle, funds-contention, and deployment edge-case workload inputs without solution outputs.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "tb4_artifacts/candidate_backend_matrix.json",
+      "role": "fixture",
+      "visibility": "policy_visible",
+      "purpose": "Records native candidate seams, baseline absences, and the evidence collection boundaries.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "tb4_artifacts/generate_policy_assets.py",
+      "role": "generator",
+      "visibility": "policy_visible",
+      "purpose": "Regenerates all deterministic common policy fixtures byte-for-byte from the pinned seed.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "tb4_artifacts/check_policy_assets.py",
+      "role": "runtime_check",
+      "visibility": "policy_visible",
+      "purpose": "Checks fixture semantics, invariant limits, contract-family distinctness, and native Java/configuration identifiers.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "cutover_assets/oracle.py",
+      "role": "oracle",
+      "visibility": "grader_only",
+      "purpose": "Independently evaluates exact API parity, decimal funds replay, per-endpoint latency, and source-isolated restart evidence.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "cutover_assets/held_out_cases.json",
+      "role": "held_out_truth",
+      "visibility": "grader_only",
+      "purpose": "Contains fresh hidden controlled account requests, concurrent funds schedule, latency distributions, and deployment evidence.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "cutover_assets/expected_results.json",
+      "role": "held_out_truth",
+      "visibility": "grader_only",
+      "purpose": "Contains separately calculated expected request, balance, latency, and target-only restart results.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "cutover_assets/generate_private_assets.py",
+      "role": "generator",
+      "visibility": "grader_only",
+      "purpose": "Regenerates held-out inputs and separately calculated truth byte-for-byte from the pinned seed.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    },
+    {
+      "path": "cutover_assets/check_private_assets.py",
+      "role": "grader",
+      "visibility": "grader_only",
+      "purpose": "Runs the independent oracle and negative exactness, financial, latency, and deployment mutation probes.",
+      "license": "CC0-1.0",
+      "provenance": {"origin": "fresh_candidate_native", "original_eval_content": false}
+    }
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "backend_contract": {
+    "heterogeneous": true,
+    "persist_target_volume_across_restart": true,
+    "source": {
+      "adapter": "jpa",
+      "engine": "postgresql",
+      "profile": "jpa"
+    },
+    "source_unavailable_after_restart": true,
+    "target": {
+      "adapter": "spring-data-mongodb",
+      "engine": "mongodb",
+      "profile": "mongodb"
+    }
+  },
+  "fixture_seed": 41031,
+  "invariants": [
+    {
+      "evidence": [
+        "phase-tagged request trace",
+        "acknowledged-write reconciliation",
+        "overlapping operation intervals"
+      ],
+      "invariant_id": "MIG-1",
+      "preserved": true,
+      "requirement": "Run source reads and writes before and during heterogeneous backfill and cutover without stopping customer traffic."
+    },
+    {
+      "evidence": [
+        "source baseline observations",
+        "candidate observations",
+        "independent target state"
+      ],
+      "invariant_id": "MIG-2",
+      "preserved": true,
+      "requirement": "Match source status and complete parsed response body, with no unexpected error, stale read, lost update, or duplicate effect."
+    },
+    {
+      "evidence": [
+        "per-request latency trace",
+        "endpoint-partitioned baseline",
+        "endpoint-partitioned post-cutover samples"
+      ],
+      "invariant_id": "MIG-3",
+      "preserved": true,
+      "requirement": "Keep every request below 5000 ms and nearest-rank p95 after cutover no more than 10 ms above source baseline for each method-and-route template."
+    },
+    {
+      "evidence": [
+        "source-denied restart probe",
+        "old-and-new account reads",
+        "source connection-attempt count"
+      ],
+      "invariant_id": "MIG-4",
+      "preserved": true,
+      "requirement": "Start a fresh application process with the source network-denied and read and write persisted target data without fallback or source attempts."
+    }
+  ],
+  "limits": {
+    "latency_partition": "method-and-route-template",
+    "p95_method": "nearest-rank",
+    "post_cutover_p95_delta_ms": 10,
+    "request_timeout_ms": 5000,
+    "stale_or_inconsistent_reads": 0,
+    "unexpected_request_failures": 0
+  },
+  "schema_version": 1,
+  "trace_schema": {
+    "exact_body_rule": "recursive JSON value equality with no ignored fields",
+    "expected_domain_errors": "count as successful customer requests only when status and body exactly match the source baseline",
+    "phases": [
+      "source_baseline",
+      "live_backfill",
+      "cutover",
+      "target_only",
+      "target_only_restart"
+    ],
+    "required_request_fields": [
+      "request_id",
+      "phase",
+      "method",
+      "route_template",
+      "started_ms",
+      "completed_ms",
+      "status",
+      "body"
+    ],
+    "write_ack_rule": "a completed successful mutation must be present in independent target state and every causally later read"
+  }
+}

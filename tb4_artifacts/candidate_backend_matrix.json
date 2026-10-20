@@ -1,0 +1,24 @@
+{
+  "baseline_status": {
+    "atomic_financial_storage_contract_present": false,
+    "dual_write_or_cdc_present": false,
+    "migration_coordinator_present": false,
+    "target_only_profile_verified": false
+  },
+  "candidate_files": {
+    "compose_file": "docker-compose.yml",
+    "rest_controller_name": "BankAccountController.java",
+    "source_adapter_name": "JpaBankAccountStorage.java",
+    "startup_config": "startup/src/main/resources/application.yml",
+    "storage_port": "core/src/main/java/com/optivem/kata/banking/core/ports/driven/BankAccountStorage.java",
+    "target_adapter_name": "MongoBankAccountStorage.java"
+  },
+  "collection_boundaries": [
+    "HTTP status/body/latency trace partitioned by method and route template",
+    "acknowledged mutation journal with stable operation identifiers",
+    "independent MongoDB account snapshot",
+    "effective Spring profile and selected BankAccountStorage bean",
+    "source-denied fresh-process connection and request log"
+  ],
+  "schema_version": 1
+}
