@@ -2,8 +2,8 @@
 
 No contextual constraint is changed: `contextual_constraint_changes: []`.
 
-- MIG-1 (`preserved=true`): timestamped HTTP reads and writes must overlap both active backfill and cutover intervals, span the complete migration without a gap over 1000 ms, and reconcile every acknowledged mutation against direct MongoDB state. The policy checker validates the evidence schema; the independent oracle validates real intervals, traffic continuity, links, and reconciliation.
-- MIG-2 (`preserved=true`): paired source/candidate status and complete JSON bodies are recursively equal. Native lifecycle response fields and the empty 404 are fixed by focused source checks. Missing and blacklisted customers are mandatory source-captured pairs. A held-out real-time replay is checked against the acknowledged journal and direct target snapshots for stale, lost, duplicate, and impossible effects.
+- MIG-1 (`preserved=true`): timestamped HTTP reads and writes must overlap both active backfill and cutover intervals, span the complete migration without a gap over 1000 ms, and reconcile every acknowledged mutation against direct MongoDB state. Every acknowledged 201 creation is treated as applied regardless of candidate classification and reconciled by its exact operation ID. The policy checker validates the evidence schema; the independent oracle validates real intervals, traffic continuity, links, and reconciliation.
+- MIG-2 (`preserved=true`): every trace is transport-error-free; paired source/candidate status and complete JSON bodies are recursively equal, and unclassified failures are rejected. Financial journals are also bound to route-specific status/body outcomes and source parity. Native lifecycle response fields and the empty 404 are fixed by focused source checks. Missing and blacklisted customers are mandatory source-captured pairs. A held-out real-time replay is checked against the acknowledged journal and direct target snapshots for stale, lost, duplicate, and impossible effects.
 - MIG-3 (`preserved=true`): all external requests, including new deposit and withdrawal routes, are below 5000 ms. At least 20 source and post-cutover trace rows per method/route are referenced by partitions; the oracle independently recomputes nearest-rank p95 and enforces a maximum 10 ms delta.
 - MIG-4 (`preserved=true`): raw container destroy/create events prove replacement with distinct IDs, mount evidence proves target-volume retention, network inspection proves PostgreSQL denial, effective configuration proves MongoDB-only selection, and a complete connection-observer interval plus attempt log proves zero source attempts while replacement-container probes read old/new accounts and perform a new write.
 
@@ -28,3 +28,9 @@ Author repair after Michele's second review
 - Every acknowledged creation and every account visible through a successful candidate GET is now matched field-for-field to the final direct MongoDB snapshot, including the exact applied-operation ID set.
 - Private regressions corrupt an HTTP-visible final document and swap applied deposit/withdraw request links; both must be rejected.
 - Michele remains the designated independent challenger; post-repair re-review is pending and is not claimed here.
+
+Author repair after Michele’s third review
+
+- The accepted creation mutation is now a regression: changing an acknowledged 201 creation to `account_not_found` and deleting its exact operation ID from the final snapshot is rejected.
+- The accepted financial mutation is now a regression: any transport error or unexpected request failure is rejected, and each financial result must match its route-specific HTTP status/body and exact source/candidate request pair.
+- Candidate evidence schema version 4 and all deterministic policy/private outputs were regenerated; Michele remains the independent challenger and a post-repair review is not claimed here.

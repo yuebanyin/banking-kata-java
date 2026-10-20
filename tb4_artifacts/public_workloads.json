@@ -1,22 +1,30 @@
 {
   "candidate_evidence_bindings": {
+    "all_request_failure_policy": [
+      "transport_error=null",
+      "expected errors paired exactly",
+      "unexpected 5xx rejected"
+    ],
     "create_match": [
       "operation_id",
       "idempotency_key",
-      "201 body.accountNumber"
+      "201 body.accountNumber",
+      "result=applied"
     ],
     "final_lifecycle_match": [
       "accountNumber",
       "fullName",
       "balance",
       "score",
-      "appliedOperationIds"
+      "applied journal operation_id values"
     ],
     "financial_request_match": [
       "account_number",
       "amount",
       "operation_id",
-      "idempotency_key"
+      "idempotency_key",
+      "route outcome status/body",
+      "source/candidate parity"
     ],
     "required_http_request_fields": [
       "request_account_number",

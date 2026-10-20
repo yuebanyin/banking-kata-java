@@ -106,7 +106,7 @@
         "origin": "fresh_candidate_native",
         "original_eval_content": false
       },
-      "purpose": "Oracle integration and nine adversarial evidence mutation checks.",
+      "purpose": "Oracle integration and thirteen adversarial evidence mutation checks.",
       "role": "runtime_check",
       "visibility": "grader_only"
     },
@@ -213,7 +213,7 @@
       "timeout_seconds": 30
     }
   ],
-  "oracle_independence": "The private oracle does not import candidate code or derive truth from application GETs. It consumes held-out intended operations and a separate candidate evidence document, replays integer balances and idempotency independently, derives latency from linked raw traces, and reconciles direct MongoDB snapshots and raw deployment records. Nine negative mutations exercise all evidence families.",
+  "oracle_independence": "The private oracle does not import candidate code or derive truth from application GETs. It consumes held-out intended operations and a separate candidate evidence document, replays integer balances and idempotency independently, derives latency from linked raw traces, and reconciles direct MongoDB snapshots and raw deployment records. Thirteen negative mutations exercise all evidence families.",
   "provenance": {
     "authoring": "Alexander authored fresh candidate-native repair assets after Michele independently challenged the first authoring pass.",
     "origin": "fresh_candidate_native",
@@ -245,14 +245,14 @@
   "seed": 41031,
   "semantic_invariants": [
     {
-      "candidate_mapping": "JPA/PostgreSQL source and MongoDB target; lifecycle plus financial HTTP traffic overlaps timestamped backfill and cutover intervals without interruption.",
+      "candidate_mapping": "JPA/PostgreSQL source and MongoDB target; lifecycle plus financial HTTP traffic overlaps timestamped backfill and cutover intervals without interruption. Every acknowledged 201 creation is unconditionally applied and its exact operation_id is present in the final MongoDB document.",
       "reference_requirement": "MIG-1: live heterogeneous migration with concurrent reads and writes.",
-      "validation": "Independent oracle checks interval intersection for reads and writes, a 1000 ms maximum traffic-start gap, external HTTP-to-journal links, and direct MongoDB reconciliation."
+      "validation": "Independent oracle checks interval intersection for reads and writes, a 1000 ms maximum traffic-start gap, external HTTP-to-journal links, and direct MongoDB reconciliation. The creation-result regression proves reconciliation does not trust candidate classification."
     },
     {
-      "candidate_mapping": "Native lifecycle DTO/empty-404 shapes, source-captured missing and blacklisted customer responses, paired status/body traces, and financial idempotency/balance state.",
+      "candidate_mapping": "Native lifecycle DTO/empty-404 shapes, source-captured missing and blacklisted customer responses, paired status/body traces, and financial idempotency/balance state. Every trace is transport-error-free; financial outcomes match route-specific status/body contracts and exact source/candidate request pairs.",
       "reference_requirement": "MIG-2: exact public behavior with no stale, failed, lost, or duplicate effects.",
-      "validation": "Focused policy check resolves native declarations; oracle recursively compares paired bodies, enforces real-time replay, and compares acknowledged operations to independently queried snapshots."
+      "validation": "Focused policy check resolves native declarations; oracle recursively compares paired bodies, enforces real-time replay, and compares acknowledged operations to independently queried snapshots. Regressions reject hidden financial transport failures, unexpected request failures, and HTTP/journal outcome disagreement."
     },
     {
       "candidate_mapping": "All four external method/route partitions include lifecycle GET/POST and required public deposit/withdrawal POST routes.",

@@ -16,8 +16,9 @@
     }
   },
   "evidence_binding_contract": {
-    "journal_to_http": "Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. An account creation links its generated account number through the 201 response.",
-    "lifecycle_to_mongodb": "The final direct MongoDB snapshot contains every acknowledged creation and every account returned by a successful candidate GET. fullName, balance, and score equal the latest pre-snapshot GET, and appliedOperationIds exactly equal the acknowledged applied journal effects for each visible account."
+    "all_request_success": "Every source and candidate trace has no transport error. Expected HTTP errors have exact source/candidate status and body parity; no unclassified 5xx is accepted.",
+    "journal_to_http": "Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. Financial status and body match the route/outcome contract and an exact source request pair. Every acknowledged 201 creation is unconditionally applied.",
+    "lifecycle_to_mongodb": "The final direct MongoDB snapshot contains every acknowledged creation and every account returned by a successful candidate GET. fullName, balance, and score equal the latest pre-snapshot GET, and appliedOperationIds exactly equal applied journal operation_id values. Every acknowledged 201 creation contributes its exact operation_id regardless of candidate classification."
   },
   "fixture_seed": 41031,
   "invariants": [

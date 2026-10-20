@@ -157,17 +157,19 @@ http_schema["properties"].update({
  "request_operation_id":{"type":["string","null"]},
  "request_idempotency_key":{"type":["string","null"]},
 })
-schema["properties"]["schema_version"]["const"] = 3
+schema["properties"]["schema_version"]["const"] = 4
 contract["evidence_binding_contract"] = {
- "journal_to_http":"Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. An account creation links its generated account number through the 201 response.",
- "lifecycle_to_mongodb":"The final direct MongoDB snapshot contains every acknowledged creation and every account returned by a successful candidate GET. fullName, balance, and score equal the latest pre-snapshot GET, and appliedOperationIds exactly equal the acknowledged applied journal effects for each visible account."
+ "journal_to_http":"Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. Financial status and body match the route/outcome contract and an exact source request pair. Every acknowledged 201 creation is unconditionally applied.",
+ "all_request_success":"Every source and candidate trace has no transport error. Expected HTTP errors have exact source/candidate status and body parity; no unclassified 5xx is accepted.",
+ "lifecycle_to_mongodb":"The final direct MongoDB snapshot contains every acknowledged creation and every account returned by a successful candidate GET. fullName, balance, and score equal the latest pre-snapshot GET, and appliedOperationIds exactly equal applied journal operation_id values. Every acknowledged 201 creation contributes its exact operation_id regardless of candidate classification."
 }
 workloads["candidate_evidence_bindings"] = {
  "required_http_request_fields":request_fields,
  "route_by_journal_kind":{"create":"POST /bank-accounts","deposit":"POST /bank-accounts/{accountNumber}/deposits","withdraw":"POST /bank-accounts/{accountNumber}/withdrawals"},
- "financial_request_match":["account_number","amount","operation_id","idempotency_key"],
- "create_match":["operation_id","idempotency_key","201 body.accountNumber"],
- "final_lifecycle_match":["accountNumber","fullName","balance","score","appliedOperationIds"]
+ "financial_request_match":["account_number","amount","operation_id","idempotency_key","route outcome status/body","source/candidate parity"],
+ "create_match":["operation_id","idempotency_key","201 body.accountNumber","result=applied"],
+ "all_request_failure_policy":["transport_error=null","expected errors paired exactly","unexpected 5xx rejected"],
+ "final_lifecycle_match":["accountNumber","fullName","balance","score","applied journal operation_id values"]
 }
 for name,obj in (("migration_contract.json",contract),("public_workloads.json",workloads),("rest_serialization_contract.json",serialization),("candidate_evidence.schema.json",schema),("candidate_backend_matrix.json",matrix)):
     dump(name,obj)
