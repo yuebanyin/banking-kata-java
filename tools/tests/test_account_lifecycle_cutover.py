@@ -61,6 +61,37 @@ class RunnerTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_direct_mongo_snapshot_ignores_journal_collection_documents(self):
+        from unittest.mock import patch
+
+        collections = {
+            "bank_account": [{
+                "accountNumber": "ACC-1", "fullName": "Ada Holder",
+                "balance": 42, "score": "B",
+                "appliedOperationIds": ["create-1", "deposit-1"],
+            }],
+            "account_operation_journal": [{
+                "operationId": "deposit-1", "accountNumber": "ACC-1",
+                "kind": "deposit", "result": "applied",
+            }],
+        }
+
+        def fake_mongosh(command, **_kwargs):
+            script = command[command.index("--eval") + 1]
+            self.assertIn('db.getCollection("bank_account")', script)
+            self.assertNotIn("getCollectionNames", script)
+            # Emulate mongosh executing the explicitly named collection query.
+            return json.dumps(collections["bank_account"])
+
+        with patch.object(runner, "run", side_effect=fake_mongosh):
+            snapshot = runner.direct_mongo_accounts("mongodb")
+
+        self.assertEqual(snapshot, [{
+            "accountNumber": "ACC-1", "fullName": "Ada Holder",
+            "balance": 42, "score": "B",
+            "appliedOperationIds": ["create-1", "deposit-1"],
+        }])
+
     def test_normalizes_only_journal_rows_from_this_run(self):
         rows = [{"operationId": "other", "idempotencyKey": "other",
                  "requestTraceId": "old", "kind": "deposit", "accountNumber": "a",

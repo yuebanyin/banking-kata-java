@@ -697,7 +697,11 @@ def normalize_journal(rows, trace_ids):
 
 
 def direct_mongo_accounts(container="mongodb"):
-    script = """const out=[]; db.getCollectionNames().forEach(n=>db.getCollection(n).find({accountNumber:{$exists:true}}).forEach(d=>out.push(d))); print(JSON.stringify(out));"""
+    # Journal documents also carry accountNumber.  Querying collections by field
+    # shape would therefore turn each operation into a malformed account row.
+    # This collection name is the persistence contract declared by
+    # MongoBankAccountStorage.COLLECTION_NAME.
+    script = """const out=[]; db.getCollection("bank_account").find({accountNumber:{$exists:true}}).forEach(d=>out.push(d)); print(JSON.stringify(out));"""
     output = run(["docker", "exec", container, "mongosh", "--quiet", "-u",
                   os.environ.get("MONGO_INITDB_ROOT_USERNAME", "root"), "-p",
                   os.environ.get("MONGO_INITDB_ROOT_PASSWORD", "cutover"),
