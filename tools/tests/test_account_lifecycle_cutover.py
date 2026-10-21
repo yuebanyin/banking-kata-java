@@ -312,6 +312,31 @@ class MongoSnapshotReconciliationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fullName"):
             self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
+    def test_replays_only_between_snapshot_journal_operations(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final["balance"] = 55
+        final["appliedOperationIds"] = ["deposit-1", "deposit-2"]
+        journals, traces = self.rows()
+        journals.append({"operation_id": "deposit-2", "account_number": "ACC-1",
+                         "kind": "deposit", "amount": 5, "acknowledged": True,
+                         "result": "applied", "completed_ms": 240})
+        self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_rejects_matching_final_snapshot_and_restart_get_corruption(self):
+        evidence = self.evidence()
+        corrupt = evidence["mongo_snapshots"][1]["accounts"][0]
+        corrupt.update({"fullName": "Corrupt Holder", "balance": 999, "score": "A"})
+        journals, traces = self.rows()
+        traces.append({"trace_id": "corrupt-restart-read", "origin": "candidate",
+                       "method": "GET", "status": 200, "completed_ms": 250,
+                       "request_account_number": "ACC-1",
+                       "body": {"accountNumber": "ACC-1", "fullName": "Corrupt Holder",
+                                "balance": 999, "score": "A"}})
+        evidence["deployment_evidence"]["restart_trace_ids"] = ["corrupt-restart-read"]
+        with self.assertRaisesRegex(ValueError, "replacement changed immutable fullName"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
     def test_rejects_snapshot_volume_not_bound_to_deployment_mount(self):
         evidence = self.evidence()
         evidence["mongo_snapshots"][1]["volume_id"] = "unrelated-volume"

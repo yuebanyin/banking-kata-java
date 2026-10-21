@@ -348,8 +348,42 @@ def validate_mongo_snapshots(evidence, journals, traces):
                     "applied operation account missing")
         observed[snapshot["purpose"]] = by_number
 
-    require(set(observed["pre_replacement"]) <= set(observed["final_reconciliation"]),
+    before = observed["pre_replacement"]
+    after = observed["final_reconciliation"]
+    require(set(before) <= set(after),
             "replacement lost a pre-replacement MongoDB account")
+
+    # A final read and a final direct snapshot can agree with one another while
+    # both are corrupt.  Anchor retained state in the direct snapshot captured
+    # before replacement, then advance it using only durable, applied journal
+    # operations completed between the two captures.
+    between = [row for row in journals if row["acknowledged"]
+               and row["result"] == "applied"
+               and pre[0]["captured_ms"] < row["completed_ms"] <= final[0]["captured_ms"]]
+    for number, old in before.items():
+        current = after[number]
+        require(current["fullName"] == old["fullName"],
+                "replacement changed immutable fullName: " + number)
+        require(current["score"] == old["score"],
+                "replacement changed immutable score: " + number)
+
+        old_ids = old["appliedOperationIds"]
+        current_ids = current["appliedOperationIds"]
+        require(current_ids[:len(old_ids)] == old_ids,
+                "replacement changed the applied-operation prefix: " + number)
+        account_operations = [row for row in between if row["account_number"] == number]
+        expected_extension = [row["operation_id"] for row in account_operations]
+        require(current_ids == old_ids + expected_extension,
+                "replacement applied-operation extension is not journal-derived: " + number)
+
+        expected_balance = old["balance"]
+        for operation in account_operations:
+            if operation["kind"] == "deposit":
+                expected_balance += operation["amount"]
+            elif operation["kind"] == "withdraw":
+                expected_balance -= operation["amount"]
+        require(current["balance"] == expected_balance,
+                "replacement balance delta is not journal-derived: " + number)
 
 
 def validate(evidence):
