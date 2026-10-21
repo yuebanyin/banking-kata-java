@@ -1,4 +1,5 @@
 dependencies {
+    implementation project(':adapter-base')
     implementation project(':core')
     implementation project(':adapter-persistence-jpa')
     implementation project(':adapter-persistence-mongo')

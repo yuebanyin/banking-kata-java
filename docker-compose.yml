@@ -23,8 +23,15 @@ services:
     networks:
       - local
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-cutover}
+    volumes:
+      - mongodb:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   mongo-express:
     image: mongo-express:0.54.0
@@ -35,9 +42,9 @@ services:
     networks:
       - local
     environment:
-      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_INITDB_ROOT_USERNAME}
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_INITDB_ROOT_PASSWORD}
-      - ME_CONFIG_MONGODB_SERVER=${ME_CONFIG_MONGODB_SERVER}
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_INITDB_ROOT_USERNAME:-root}
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_INITDB_ROOT_PASSWORD:-cutover}
+      - ME_CONFIG_MONGODB_SERVER=${ME_CONFIG_MONGODB_SERVER:-mongodb}
   adminer:
     image: adminer:4.8.1
     container_name: adminer
@@ -93,7 +100,33 @@ services:
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_USER}  # RabbitMQ admin username
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_PASS}  # RabbitMQ admin password
+  banking-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: banking-app
+    restart: unless-stopped
+    ports:
+      - '8080:8080'
+    networks:
+      - local
+    depends_on:
+      - postgres
+      - mongodb
+    environment:
+      SPRING_PROFILES_ACTIVE: account-cutover,adapter-persistence-jpa,adapter-persistence-mongo,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/banking_kata_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+      MONGODB_URI: mongodb://root:cutover@mongodb:27017/?authSource=admin
+      MONGODB_DATABASE_NAME: banking_kata_db
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: cutover
+      CUTOVER_EFFECTIVE_STORAGE: dual-write
+
 volumes:
+  mongodb:
+    driver: local
   postgres:
     driver: local
   redis:

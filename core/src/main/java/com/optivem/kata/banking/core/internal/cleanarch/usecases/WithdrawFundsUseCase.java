@@ -9,7 +9,9 @@ import com.optivem.kata.banking.core.internal.cleanarch.domain.common.events.Eve
 import com.optivem.kata.banking.core.ports.driven.DateTimeService;
 import com.optivem.kata.banking.core.ports.driver.VoidResponse;
 import com.optivem.kata.banking.core.ports.driver.accounts.withdrawfunds.WithdrawFundsRequest;
+import org.springframework.stereotype.Component;
 
+@Component
 public class WithdrawFundsUseCase implements Command.Handler<WithdrawFundsRequest, VoidResponse> {
 
     private final BankAccountRepository repository;

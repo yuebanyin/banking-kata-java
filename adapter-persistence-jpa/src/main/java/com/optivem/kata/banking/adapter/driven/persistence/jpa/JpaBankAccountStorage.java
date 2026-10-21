@@ -11,9 +11,11 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.util.Optional;
+import java.util.List;
+import java.util.stream.StreamSupport;
+import java.util.stream.Collectors;
 import java.util.function.Consumer;
 
-@Primary
 @Component
 @Profile(ProfileNames.ADAPTER_PERSISTENCE_JPA)
 public class JpaBankAccountStorage implements BankAccountStorage {
@@ -36,6 +38,13 @@ public class JpaBankAccountStorage implements BankAccountStorage {
 
         var bankAccount = toDto(bankAccountRecord.get());
         return Optional.of(bankAccount);
+    }
+
+    @Override
+    public List<BankAccountDto> findAll() {
+        return StreamSupport.stream(dataAccessor.findAll().spliterator(), false)
+                .map(this::toDto)
+                .collect(Collectors.toList());
     }
 
     @Override

@@ -1,16 +1,14 @@
 spring:
-
   profiles:
-    active: adapter-persistence-jpa,adapter-persistence-redis,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none
-
+    active: ${SPRING_PROFILES_ACTIVE:adapter-persistence-jpa,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none}
   data:
     mongodb:
-      authentication-database: admin
-      username: ${MONGO_INITDB_ROOT_USERNAME}
-      password: ${MONGO_INITDB_ROOT_PASSWORD}
-      database: ${ME_CONFIG_MONGODB_SERVER}
-      port: 27017
-      host: localhost
+      authentication-database: ${MONGODB_AUTH_DATABASE:admin}
+      username: ${MONGO_INITDB_ROOT_USERNAME:root}
+      password: ${MONGO_INITDB_ROOT_PASSWORD:cutover}
+      database: ${MONGODB_DATABASE_NAME:banking_kata_db}
+      port: ${MONGODB_PORT:27017}
+      host: ${MONGODB_HOST:localhost}
 
 customer-provider-uri: http://something
 national-identity-uri:
