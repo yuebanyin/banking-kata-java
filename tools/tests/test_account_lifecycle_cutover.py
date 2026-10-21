@@ -111,3 +111,51 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class WorkloadBindingTest(unittest.TestCase):
+    def setUp(self):
+        import importlib.util
+        path = ROOT / "tools" / "validate_account_lifecycle_evidence.py"
+        spec = importlib.util.spec_from_file_location("cutover_validator", path)
+        self.validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.validator)
+        self.evidence = {
+            "http_trace": [{"request_account_number": "account-a", "request_operation_id": "operation-a"}],
+            "operation_journal": [{
+                "operation_id": "operation-a", "account_number": "account-a",
+                "amount": 25, "kind": "deposit"
+            }],
+        }
+        self.workload = {
+            "controlled_collaborators": {"account_numbers": ["account-a"]},
+            "operations": [{
+                "operation_id": "operation-a", "account_number": "account-a",
+                "amount": 25, "kind": "deposit"
+            }],
+        }
+
+    def test_evidence_is_bound_to_declared_workload_identifiers_and_payload(self):
+        self.validator.validate_workload_binding(self.evidence, self.workload)
+
+    def test_stale_evidence_from_another_workload_is_rejected(self):
+        self.workload["controlled_collaborators"]["account_numbers"] = ["held-out-account"]
+        with self.assertRaisesRegex(ValueError, "does not match workload"):
+            self.validator.validate_workload_binding(self.evidence, self.workload)
+
+    def test_changed_operation_amount_is_rejected(self):
+        self.workload["operations"][0]["amount"] = 26
+        with self.assertRaisesRegex(ValueError, "amount mismatch"):
+            self.validator.validate_workload_binding(self.evidence, self.workload)
+
+class DeploymentObservationTest(unittest.TestCase):
+    def test_network_evidence_uses_daemon_observed_id(self):
+        import importlib.util
+        import subprocess
+        from unittest.mock import patch
+        path = ROOT / "tools" / "account_lifecycle_cutover.py"
+        spec = importlib.util.spec_from_file_location("cutover_runner_network", path)
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        response = subprocess.CompletedProcess([], 0, '[{"Id":"network-sha-123"}]', "")
+        with patch.object(runner, "run", return_value=response):
+            self.assertEqual("network-sha-123", runner.observed_network_id("project_target"))

@@ -34,6 +34,72 @@ def nearest_p95(values):
     return ordered[max(0, math.ceil(len(ordered) * .95) - 1)]
 
 
+def _leaf_strings(value):
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from _leaf_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _leaf_strings(child)
+    elif isinstance(value, str):
+        yield value
+
+
+def _declared_values(workload, field_names):
+    values = set()
+    def visit(value, parent=None):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in field_names:
+                    values.update(_leaf_strings(child))
+                visit(child, key)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, parent)
+    visit(workload)
+    return values
+
+
+def validate_workload_binding(evidence, workload):
+    """Reject valid-but-stale evidence produced for a different workload.
+
+    Public-format workloads declare controlled account and operation identifiers.  Those
+    identifiers are opaque: semantic validation binds them to observed leaves instead of
+    depending on the public fixture's labels or values.
+    """
+    observed = set(_leaf_strings(evidence))
+    accounts = _declared_values(workload, {"account_number", "account_numbers"})
+    operations = _declared_values(workload, {
+        "operation_id", "operation_ids", "idempotency_key", "idempotency_keys"})
+    required = accounts | operations
+    require(required, "workload declares no bindable account or operation identifiers")
+    missing = sorted(value for value in required if value not in observed)
+    require(not missing, "evidence does not match workload identifiers: " + ", ".join(missing[:5]))
+
+    # Bind declared financial payloads, when present, to their durable journal row.
+    journal = {row["operation_id"]: row for row in evidence["operation_journal"]}
+    def bind_payloads(value):
+        if isinstance(value, dict):
+            operation_id = value.get("operation_id")
+            if operation_id in journal:
+                row = journal[operation_id]
+                if isinstance(value.get("amount"), int):
+                    require(row["amount"] == value["amount"],
+                            "workload amount mismatch for " + operation_id)
+                if isinstance(value.get("account_number"), str):
+                    require(row["account_number"] == value["account_number"],
+                            "workload account mismatch for " + operation_id)
+                if isinstance(value.get("kind"), str) and value["kind"] in ("create", "deposit", "withdraw"):
+                    require(row["kind"] == value["kind"],
+                            "workload operation kind mismatch for " + operation_id)
+            for child in value.values():
+                bind_payloads(child)
+        elif isinstance(value, list):
+            for child in value:
+                bind_payloads(child)
+    bind_payloads(workload)
+
+
 def validate(evidence):
     require(evidence["schema_version"] == 5, "schema version mismatch")
     traces = evidence["http_trace"]
@@ -189,10 +255,11 @@ def main():
     parser.add_argument("--evidence", required=True)
     parser.add_argument("--schema", default="tb4_artifacts/candidate_evidence.schema.json")
     args = parser.parse_args()
-    json.loads(Path(args.workload).read_text())
+    workload = json.loads(Path(args.workload).read_text())
     evidence = json.loads(Path(args.evidence).read_text())
     validate_schema(evidence, args.schema)
     validate(evidence)
+    validate_workload_binding(evidence, workload)
     print("account lifecycle evidence valid")
 
 

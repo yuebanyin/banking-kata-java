@@ -4,6 +4,7 @@ import com.optivem.kata.banking.adapter.driver.restapi.spring.controllers.base.B
 import com.optivem.kata.banking.adapter.driver.restapi.spring.controllers.requests.AccountMutationRequest;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationContext;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationJournal;
+import com.optivem.kata.banking.core.ports.driven.AccountOperationRecovery;
 import com.optivem.kata.banking.core.ports.driven.AccountProjectionWriter;
 import com.optivem.kata.banking.core.ports.driver.accounts.depositfunds.DepositFundsRequest;
 import com.optivem.kata.banking.core.ports.driver.accounts.openaccount.OpenAccountRequest;
@@ -31,6 +32,9 @@ public class BankAccountController extends BaseController {
     @Autowired(required = false)
     private AccountProjectionWriter projectionWriter;
 
+    @Autowired(required = false)
+    private AccountOperationRecovery operationRecovery;
+
     @PostMapping("/bank-accounts")
     public ResponseEntity<OpenAccountResponse> openAccount(
             @RequestBody OpenAccountRequest request,
@@ -47,6 +51,13 @@ public class BankAccountController extends BaseController {
         if ("duplicate_ignored".equals(reserved.result()) || "applied".equals(reserved.result())) {
             return new ResponseEntity<>(OpenAccountResponse.builder()
                     .accountNumber(reserved.accountNumber()).build(), HttpStatus.CREATED);
+        }
+        if (operationRecovery != null) {
+            var recoveredAccount = operationRecovery.recover(operationId);
+            if (recoveredAccount.isPresent()) {
+                return new ResponseEntity<>(OpenAccountResponse.builder()
+                        .accountNumber(recoveredAccount.get()).build(), HttpStatus.CREATED);
+            }
         }
         var operation = new AccountOperationContext.Operation(operationId, key, trace, "create");
         try {
@@ -104,6 +115,10 @@ public class BankAccountController extends BaseController {
                 : journal.reserve(operationId, key, trace, kind, accountNumber, body.getAmount(), started);
         if (reserved != null && ("duplicate_ignored".equals(reserved.result())
                 || "applied".equals(reserved.result()))) {
+            return ResponseEntity.noContent().build();
+        }
+        if (reserved != null && operationRecovery != null
+                && operationRecovery.recover(operationId).isPresent()) {
             return ResponseEntity.noContent().build();
         }
 

@@ -4,6 +4,7 @@ import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.internal.BankAccountRecord;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.internal.JpaBankAccountDataAccessor;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.mapper.BankAccountJpaMapper;
+import com.optivem.kata.banking.core.ports.driven.AccountOperationContext;
 import com.optivem.kata.banking.core.ports.driven.BankAccountDto;
 import com.optivem.kata.banking.core.ports.driven.BankAccountStorage;
 import org.springframework.context.annotation.Primary;
@@ -40,6 +41,10 @@ public class JpaBankAccountStorage implements BankAccountStorage {
         return Optional.of(bankAccount);
     }
 
+    public Optional<BankAccountDto> findByOperationId(String operationId) {
+        return dataAccessor.findByLastOperationId(operationId).map(this::toDto);
+    }
+
     @Override
     public List<BankAccountDto> findAll() {
         return StreamSupport.stream(dataAccessor.findAll().spliterator(), false)
@@ -50,6 +55,7 @@ public class JpaBankAccountStorage implements BankAccountStorage {
     @Override
     public void add(BankAccountDto bankAccount) {
         var bankAccountRecord = create(bankAccount);
+        markCurrentOperation(bankAccountRecord);
         dataAccessor.save(bankAccountRecord);
     }
 
@@ -83,6 +89,10 @@ public class JpaBankAccountStorage implements BankAccountStorage {
         return dto;
     }
 
+    private void markCurrentOperation(BankAccountRecord record) {
+        AccountOperationContext.current().ifPresent(operation -> record.setLastOperationId(operation.operationId()));
+    }
+
     private Optional<BankAccountRecord> findByAccountNumber(String accountNumber) {
         return dataAccessor.findByAccountNumber(accountNumber);
     }
@@ -90,6 +100,7 @@ public class JpaBankAccountStorage implements BankAccountStorage {
     private Consumer<BankAccountRecord> updateTheModelWithInformationFrom(BankAccountDto bankAccountDto) {
         return bankAccountRecord -> {
             var updatedBankAccountModel = bankAccountJpaMapper.toRecord(bankAccountDto, bankAccountRecord);
+            markCurrentOperation(updatedBankAccountModel);
             dataAccessor.save(updatedBankAccountModel);
         };
     }

@@ -42,6 +42,60 @@ def docker_inspect(name):
     return json.loads(run(["docker", "inspect", name]))[0]
 
 
+
+def observed_network_id(reference):
+    """Return a daemon-observed immutable Docker network ID, never a Compose name."""
+    network = run(["docker", "network", "inspect", reference], check=False)
+    if network.returncode == 0:
+        rows = json.loads(network.stdout)
+        if rows and rows[0].get("Id"):
+            return rows[0]["Id"]
+    inspected = docker_inspect(reference)
+    networks = inspected.get("NetworkSettings", {}).get("Networks", {})
+    identifiers = sorted({item.get("NetworkID") for item in networks.values() if item.get("NetworkID")})
+    if not identifiers:
+        raise RuntimeError("no daemon-observed Docker network ID for " + reference)
+    return identifiers[0]
+
+def connection_audit_complete():
+    """Prove source isolation from daemon topology and live connection tables.
+
+    Unlike a caller-supplied flag, this succeeds only when Docker inspection shows
+    that the replacement and PostgreSQL share no network, both live socket tables
+    can be observed, and PostgreSQL reports no client sessions.
+    """
+    listed = run(["docker", "ps", "-q"], check=False)
+    if listed.returncode != 0:
+        return False
+    inspected = []
+    for container_id in listed.stdout.split():
+        try:
+            inspected.append(docker_inspect(container_id))
+        except Exception:
+            return False
+    source = next((item for item in inspected
+                   if "postgres" in item.get("Config", {}).get("Image", "").lower()), None)
+    candidates = [item for item in inspected
+                  if any("adapter-persistence-mongo" in value and "target-only" in value
+                         for value in item.get("Config", {}).get("Env", []))]
+    if source is None or not candidates:
+        return False
+    application = max(candidates, key=lambda item: item.get("Created", ""))
+    source_networks = set(source.get("NetworkSettings", {}).get("Networks", {}))
+    app_networks = set(application.get("NetworkSettings", {}).get("Networks", {}))
+    if source_networks & app_networks:
+        return False
+    sockets = run(["docker", "exec", application["Id"], "sh", "-c",
+                   "cat /proc/net/tcp /proc/net/tcp6"], check=False)
+    sessions = run(["docker", "exec", source["Id"], "sh", "-c",
+                    "psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc "
+                    "\"select count(*) from pg_stat_activity "
+                    "where backend_type='client backend' and pid <> pg_backend_pid()\""],
+                   check=False)
+    return (sockets.returncode == 0 and sessions.returncode == 0
+            and sessions.stdout.strip() == "0")
+
+
 def family(workload, family_id):
     return next((item for item in workload.get("contract_families", [])
                  if item.get("family_id") == family_id), {})
@@ -147,15 +201,26 @@ def queue_account(c, account_number):
 
 
 def open_seed_account(c, account_number, national_id, balance):
-    configure_customer(c, national_id, "eligible")
-    queue_account(c, account_number)
-    trace = c.request("POST", "/bank-accounts",
-                      body={"nationalIdentityNumber": national_id, "balance": balance},
-                      origin="source", phase="source_baseline", route_template="/bank-accounts")
-    if trace["status"] != 201 or not isinstance(trace["body"], dict):
-        raise RuntimeError("could not seed account: %s" % trace)
-    c.traces.pop()
-
+    """Insert a genuine PostgreSQL-only row; MongoDB is populated only by backfill."""
+    import hashlib
+    account_id = 1_000_000_000 + int(hashlib.sha256(account_number.encode()).hexdigest()[:10], 16)
+    payload = {
+        "accountId": account_id,
+        "accountNumber": account_number,
+        "nationalIdentityNumber": national_id,
+        "firstName": "Pre",
+        "lastName": "Migration",
+        "openingDate": "2020-01-01",
+        "balance": int(balance),
+    }
+    request = urllib.request.Request(
+        c.base + "/internal/cutover/fixtures/source-accounts",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=5) as response:
+        if response.status != 204:
+            raise RuntimeError("source-only seed failed: HTTP %s" % response.status)
+    return account_number
 
 def paired(c, method, path, *, phase, route_template, body=None, headers=None,
            account=None, amount=None, operation_id=None, idempotency_key=None):
@@ -426,7 +491,7 @@ def replace_application(c, accounts, operation_id):
             {"event": "destroy", "container_id": old_id, "at_ms": started, "image_digest": image},
             {"event": "create", "container_id": new_id, "at_ms": now_ms(), "image_digest": image}],
         "target_mount_before": mount, "target_mount_after": mount,
-        "postgresql_network_inspect": {"network": network, "network_id": network,
+        "postgresql_network_inspect": {"network": network, "network_id": observed_network_id(network),
                                                "attached": False, "postgresql_attached": False,
                                                "source_network_denied": True,
                                                "inspect_command": "docker network inspect " + network,
@@ -434,7 +499,7 @@ def replace_application(c, accounts, operation_id):
         "effective_configuration": {"storage": "mongodb", "postgresql_enabled": False,
                                     "active_profiles": profiles,
                                     "selected_storage_bean": "mongoBankAccountStorage"},
-        "connection_observer": {"kind": "docker-network-and-log", "complete": True,
+        "connection_observer": {"kind": "docker-network-and-log", "complete": connection_audit_complete(),
                                 "started_ms": started, "completed_ms": now_ms()},
         "connection_attempt_log": [], "restart_trace_ids": restart_ids,
     }

@@ -33,4 +33,7 @@ public class BankAccountRecord {
 
     @Column(name = "balance", nullable = false)
     private int balance;
+
+    @Column(name = "last_operation_id")
+    private String lastOperationId;
 }
