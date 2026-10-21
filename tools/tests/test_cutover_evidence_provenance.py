@@ -61,8 +61,9 @@ class CollectorSeparationTest(unittest.TestCase):
         self.assertEqual(1, urls.count("http://candidate/internal/evidence/source-observation"))
         self.assertEqual("candidate", candidate["origin"])
         self.assertEqual("source", source["origin"])
-        self.assertEqual((candidate["started_ms"], candidate["completed_ms"]),
-                         (source["started_ms"], source["completed_ms"]))
+        self.assertGreaterEqual(source["started_ms"], candidate["completed_ms"])
+        self.assertEqual(candidate["completed_ms"] - candidate["started_ms"],
+                         source["completed_ms"] - source["started_ms"])
 
     def test_source_baseline_uses_one_public_request_and_one_jpa_receipt(self):
         urls = []
@@ -81,7 +82,7 @@ class CollectorSeparationTest(unittest.TestCase):
                 route_template=runner.ROUTES["deposit"][1], account="A", amount=1,
                 operation_id="op", idempotency_key="op", body={"amount": 1})
         self.assertEqual("source", source["origin"])
-        self.assertEqual((100, 140), (source["started_ms"], source["completed_ms"]))
+        self.assertEqual((142, 182), (source["started_ms"], source["completed_ms"]))
         self.assertEqual(1, urls.count("http://candidate/bank-accounts/A/deposits"))
         self.assertEqual(1, urls.count("http://candidate/internal/evidence/source-observation"))
 

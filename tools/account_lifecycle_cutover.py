@@ -448,10 +448,16 @@ class Collector:
                                (control_status, transport, receipt))
         if "status" not in receipt or "body" not in receipt:
             raise RuntimeError("PostgreSQL source receipt was incomplete")
+        # A source trace is a receipt recorded after the public source-backed request,
+        # not a second execution of that request.  Anchor it when the real receipt call
+        # completes, while retaining the measured public-route duration used by the
+        # source latency partition.
+        public_duration = candidate["completed_ms"] - candidate["started_ms"]
+        receipt_started = max(observation_completed, candidate["completed_ms"])
         return self._record(
             trace_id=trace_id, comparison_id=comparison_id, origin="source", phase=phase,
             method=method, route_template=route_template,
-            started=candidate["started_ms"], completed=candidate["completed_ms"],
+            started=receipt_started, completed=receipt_started + public_duration,
             status=receipt["status"], response_body=receipt["body"],
             transport=None, account=account, amount=amount, operation_id=operation_id,
             idempotency_key=idempotency_key)
@@ -608,12 +614,61 @@ def latency_samples(c, phase, origin, accounts, national_id):
                missing, {"amount": 1, "operationId": None}, 1)]
     for method, path, template, account, body, amount in routes:
         ids = []
-        for _ in range(20):
-            trace = c.request(method, path, body=body, origin=origin, phase=phase,
-                              route_template=template, account=account, amount=amount)
+        for sample_index in range(20):
+            headers = None
+            operation_id = None
+            idempotency_key = None
+            # The repeatable latency POSTs deliberately exercise deterministic
+            # domain-error paths (missing customer/account).  They are not acknowledged
+            # operations and therefore must not manufacture operation identities.  If a
+            # changed workload/configuration unexpectedly makes one successful, the
+            # post-collection journal assertion below rejects the run.
+            trace = c.request(
+                method, path, body=body, headers=headers, origin=origin, phase=phase,
+                route_template=template, account=account, amount=amount,
+                operation_id=operation_id, idempotency_key=idempotency_key)
             ids.append(trace["trace_id"])
         result.append(((method, template), ids))
     return dict(result)
+
+
+def assert_latency_posts_journaled(traces, journals, partitions):
+    """Require one durable journal row for every successful latency POST execution."""
+    by_id = {trace["trace_id"]: trace for trace in traces}
+    by_comparison = {}
+    for trace in traces:
+        comparison = trace.get("comparison_id")
+        if comparison is not None:
+            by_comparison.setdefault(comparison, []).append(trace)
+    rows_by_trace = {}
+    for row in journals:
+        rows_by_trace.setdefault(row["request_trace_id"], []).append(row)
+
+    latency_ids = set()
+    for partition in partitions:
+        latency_ids.update(partition["baseline_trace_ids"])
+        latency_ids.update(partition["post_cutover_trace_ids"])
+    for trace_id in latency_ids:
+        trace = by_id[trace_id]
+        execution = trace
+        if trace["origin"] == "source":
+            candidates = [row for row in by_comparison.get(trace["comparison_id"], [])
+                          if row["origin"] == "candidate"]
+            if len(candidates) != 1:
+                raise ValueError("source latency trace has no unique public execution: " + trace_id)
+            execution = candidates[0]
+        if execution["method"] != "POST" or not 200 <= execution["status"] < 300:
+            continue
+        linked = rows_by_trace.get(execution["trace_id"], [])
+        if len(linked) != 1:
+            raise ValueError("successful latency POST must have exactly one journal: " +
+                             execution["trace_id"])
+        row = linked[0]
+        if (not execution.get("request_operation_id") or
+                row.get("operation_id") != execution["request_operation_id"] or
+                row.get("idempotency_key") != execution.get("request_idempotency_key")):
+            raise ValueError("successful latency POST journal identity mismatch: " +
+                             execution["trace_id"])
 
 
 def normalize_journal(rows, trace_ids):
@@ -864,6 +919,7 @@ def execute(args):
         partitions.append({"method": route[0], "route_template": route[1],
                            "baseline_trace_ids": baseline_ids,
                            "post_cutover_trace_ids": post[route]})
+    assert_latency_posts_journaled(c.traces, journals, partitions)
     evidence = {"schema_version": 5, "run_id": run_id,
                 "migration_intervals": list(unique.values()), "http_trace": c.traces,
                 "operation_journal": journals, "mongo_snapshots": snapshots,
