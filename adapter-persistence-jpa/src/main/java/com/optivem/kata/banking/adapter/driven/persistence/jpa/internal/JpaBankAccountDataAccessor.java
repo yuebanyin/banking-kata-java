@@ -9,5 +9,4 @@ import java.util.Optional;
 public interface JpaBankAccountDataAccessor extends CrudRepository<BankAccountRecord, Long> {
     Optional<BankAccountRecord> findByAccountNumber(String accountNumber);
 
-    Optional<BankAccountRecord> findByLastOperationId(String operationId);
 }

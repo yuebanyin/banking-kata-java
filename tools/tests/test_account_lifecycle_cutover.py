@@ -155,6 +155,31 @@ class WorkloadBindingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "amount mismatch"):
             self.validator.validate_workload_binding(self.evidence, self.workload)
 
+    def test_financial_account_alias_is_bound_to_mapped_http_journal_and_snapshot_account(self):
+        import copy
+        workload = {
+            "fixture_seed": 71,
+            "controlled_collaborators": {"account_numbers": []},
+            "contract_families": [{
+                "family_id": "funds-linearizability",
+                "initial_balances": {"hot": 100, "exact": 50},
+                "waves": [{"operations": [{"kind": "deposit", "account": "exact",
+                                               "amount": 25, "operation_id": "alias-op"}]}]
+            }]
+        }
+        aliases = self.validator._financial_alias_accounts(workload)
+        stale = {
+            "http_trace": [{"origin": "candidate", "request_operation_id": "alias-op",
+                            "request_account_number": aliases["hot"], "request_amount": 25,
+                            "request_idempotency_key": None}],
+            "operation_journal": [{"operation_id": "alias-op", "idempotency_key": "alias-op",
+                                   "account_number": aliases["hot"], "amount": 25,
+                                   "kind": "deposit"}],
+            "mongo_snapshots": [{"accounts": [{"accountNumber": aliases["hot"]}]}]
+        }
+        with self.assertRaisesRegex(ValueError, "account mismatch"):
+            self.validator.validate_workload_binding(stale, workload)
+
 class DeploymentObservationTest(unittest.TestCase):
     def test_runner_replacement_environment_is_explicitly_target_only_mongodb(self):
         environment = runner.replacement_environment()
@@ -175,17 +200,38 @@ class DeploymentObservationTest(unittest.TestCase):
         ]
         self.assertFalse(runner.is_target_only_mongo_environment(environment))
 
-    def test_network_evidence_uses_daemon_observed_id(self):
-        import importlib.util
-        import subprocess
+    def test_source_isolation_is_derived_from_scoped_network_socket_session_and_config(self):
+        app = {"Id": "app-new", "Config": {"Env": runner.replacement_environment()},
+               "NetworkSettings": {"Networks": {"target": {"NetworkID": "network-target",
+                                                               "IPAddress": "172.20.0.5"}}}}
+        source = {"Id": "postgres-project", "NetworkSettings": {"Networks": {
+            "source-admin": {"NetworkID": "network-source", "IPAddress": "172.21.0.2"}}}}
+        effective = {"storage": "mongodb", "postgresql_enabled": False,
+                     "active_profiles": ["adapter-persistence-mongo", "target-only"],
+                     "selected_storage_bean": "example.MongoBankAccountStorage"}
+        observer, attempts = runner.assess_source_isolation(
+            app, source, "network-target", "  sl local_address rem_address st\n",
+            "172.21.0.9|psql|active\n", "mongo startup complete\n", effective, 100)
+        self.assertTrue(observer["complete"])
+        self.assertEqual(observer["postgres_established_socket_count"], 0)
+        self.assertEqual(attempts, [])
+
+        observer, _ = runner.assess_source_isolation(
+            app, source, "network-target",
+            "0: 0100007F:C001 0200007F:1538 01 00000000:00000000\n",
+            "", "", effective, 100)
+        self.assertFalse(observer["complete"])
+        self.assertEqual(observer["postgres_established_socket_count"], 1)
+
+    def test_scoped_compose_lookup_rejects_unrelated_global_container(self):
         from unittest.mock import patch
-        path = ROOT / "tools" / "account_lifecycle_cutover.py"
-        spec = importlib.util.spec_from_file_location("cutover_runner_network", path)
-        runner = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runner)
-        response = subprocess.CompletedProcess([], 0, '[{"Id":"network-sha-123"}]', "")
-        with patch.object(runner, "run", return_value=response):
-            self.assertEqual("network-sha-123", runner.observed_network_id("project_target"))
+        unrelated = {"Id": "other-postgres", "Config": {"Labels": {
+            "com.docker.compose.service": "postgres",
+            "com.docker.compose.project": "some-other-project"}}}
+        with patch.object(runner, "run", return_value="other-postgres"), \
+             patch.object(runner, "docker_inspect", return_value=unrelated):
+            with self.assertRaisesRegex(RuntimeError, "another Compose project"):
+                runner.scoped_compose_container("postgres", "banking-project")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ runner derives accounts and operations from family/observation attributes so a
 structurally compatible held-out document can change every public value.
 """
 import argparse
+import hashlib
+import re
 import json
 import os
 import subprocess
@@ -30,35 +32,42 @@ def now_ms():
     return time.time_ns() // 1_000_000
 
 
+def capture(command):
+    return subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE)
+
+
 def run(command, *, check=True):
-    result = subprocess.run(command, cwd=ROOT, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
+    result = capture(command)
     if check and result.returncode:
         raise RuntimeError("command failed: %s\n%s" % (" ".join(command), result.stderr.strip()))
     return result.stdout.strip()
 
 
-def docker_inspect(name):
-    return json.loads(run(["docker", "inspect", name]))[0]
-
+def docker_inspect(reference):
+    rows = json.loads(run(["docker", "inspect", reference]))
+    if len(rows) != 1:
+        raise RuntimeError("expected exactly one inspected object: " + reference)
+    return rows[0]
 
 
 def observed_network_id(reference):
     """Return a daemon-observed immutable Docker network ID, never a Compose name."""
-    network = run(["docker", "network", "inspect", reference], check=False)
-    if network.returncode == 0:
-        rows = json.loads(network.stdout)
-        if rows and rows[0].get("Id"):
+    result = capture(["docker", "network", "inspect", reference])
+    if result.returncode == 0:
+        rows = json.loads(result.stdout)
+        if len(rows) == 1 and rows[0].get("Id"):
             return rows[0]["Id"]
     inspected = docker_inspect(reference)
-    networks = inspected.get("NetworkSettings", {}).get("Networks", {})
-    identifiers = sorted({item.get("NetworkID") for item in networks.values() if item.get("NetworkID")})
-    if not identifiers:
-        raise RuntimeError("no daemon-observed Docker network ID for " + reference)
+    identifiers = sorted({item.get("NetworkID") for item in
+                          inspected.get("NetworkSettings", {}).get("Networks", {}).values()
+                          if item.get("NetworkID")})
+    if len(identifiers) != 1:
+        raise RuntimeError("expected one daemon-observed network ID for " + reference)
     return identifiers[0]
 
+
 def replacement_environment():
-    """Environment passed to the source-isolated replacement container."""
     return [
         "SPRING_PROFILES_ACTIVE=adapter-persistence-mongo,target-only,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none",
         "MONGODB_URI=mongodb://root:cutover@mongodb:27017/?authSource=admin",
@@ -67,58 +76,144 @@ def replacement_environment():
     ]
 
 
+def _environment_map(environment):
+    return {entry.split("=", 1)[0]: entry.split("=", 1)[1]
+            for entry in environment if isinstance(entry, str) and "=" in entry}
+
+
 def is_target_only_mongo_environment(environment):
-    """Return true only for an explicit MongoDB-only replacement configuration."""
-    variables = {}
-    for entry in environment:
-        if isinstance(entry, str) and "=" in entry:
-            key, value = entry.split("=", 1)
-            variables[key] = value
-    profiles = {item.strip() for item in
-                variables.get("SPRING_PROFILES_ACTIVE", "").split(",") if item.strip()}
-    return ("adapter-persistence-mongo" in profiles and
-            "target-only" in profiles and
+    variables = _environment_map(environment)
+    profiles = {item.strip() for item in variables.get("SPRING_PROFILES_ACTIVE", "").split(",")
+                if item.strip()}
+    return ("adapter-persistence-mongo" in profiles and "target-only" in profiles and
             "adapter-persistence-jpa" not in profiles and
             variables.get("CUTOVER_EFFECTIVE_STORAGE") == "mongodb")
 
 
-def connection_audit_complete():
-    """Prove source isolation from daemon topology and live connection tables.
+def _compose_labels(inspected):
+    return inspected.get("Config", {}).get("Labels", {}) or {}
 
-    Unlike a caller-supplied flag, this succeeds only when Docker inspection shows
-    that the replacement and PostgreSQL share no network, both live socket tables
-    can be observed, and PostgreSQL reports no client sessions.
-    """
-    listed = run(["docker", "ps", "-q"], check=False)
-    if listed.returncode != 0:
-        return False
-    inspected = []
-    for container_id in listed.stdout.split():
+
+def scoped_compose_container(service, project):
+    """Resolve a service through this Compose project and verify daemon labels."""
+    ids = [item for item in run(["docker-compose", "ps", "-q", service]).splitlines() if item]
+    if len(ids) != 1:
+        raise RuntimeError("expected one %s container in Compose project" % service)
+    inspected = docker_inspect(ids[0])
+    labels = _compose_labels(inspected)
+    if labels.get("com.docker.compose.service") != service:
+        raise RuntimeError("container is not scoped to Compose service " + service)
+    if project and labels.get("com.docker.compose.project") != project:
+        raise RuntimeError("container belongs to another Compose project")
+    return inspected
+
+
+def scoped_common_network(application, source, mongo, project):
+    network_sets = []
+    for item in (application, source, mongo):
+        network_sets.append(set(item.get("NetworkSettings", {}).get("Networks", {})))
+    candidates = set.intersection(*network_sets)
+    scoped = []
+    for name in candidates:
+        inspected = json.loads(run(["docker", "network", "inspect", name]))[0]
+        labels = inspected.get("Labels", {}) or {}
+        if not project or labels.get("com.docker.compose.project") == project:
+            scoped.append((name, inspected["Id"]))
+    if len(scoped) != 1:
+        raise RuntimeError("expected one project-scoped application/source/MongoDB network")
+    return scoped[0]
+
+
+def _network_ids(inspected):
+    return {value.get("NetworkID") for value in
+            inspected.get("NetworkSettings", {}).get("Networks", {}).values()
+            if value.get("NetworkID")}
+
+
+def _container_ips(inspected):
+    return {value.get("IPAddress") for value in
+            inspected.get("NetworkSettings", {}).get("Networks", {}).values()
+            if value.get("IPAddress")}
+
+
+def _postgres_established_sockets(proc_net):
+    matches = []
+    for line in proc_net.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or ":" not in fields[2]:
+            continue
         try:
-            inspected.append(docker_inspect(container_id))
-        except Exception:
-            return False
-    source = next((item for item in inspected
-                   if "postgres" in item.get("Config", {}).get("Image", "").lower()), None)
-    candidates = [item for item in inspected
-                  if is_target_only_mongo_environment(
-                      item.get("Config", {}).get("Env", []))]
-    if source is None or not candidates:
-        return False
-    application = max(candidates, key=lambda item: item.get("Created", ""))
-    source_networks = set(source.get("NetworkSettings", {}).get("Networks", {}))
-    app_networks = set(application.get("NetworkSettings", {}).get("Networks", {}))
-    if source_networks & app_networks:
-        return False
-    sockets = run(["docker", "exec", application["Id"], "sh", "-c",
-                   "cat /proc/net/tcp /proc/net/tcp6"], check=False)
-    sessions = run(["docker", "exec", source["Id"], "sh", "-c",
-                    "psql -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\" -Atc "
-                    "\"select count(*) from pg_stat_activity "
-                    "where backend_type='client backend' and pid <> pg_backend_pid()\""],
-                   check=False)
-    return (sockets.returncode == 0 and sessions.returncode == 0
-            and sessions.stdout.strip() == "0")
+            remote_port = int(fields[2].rsplit(":", 1)[1], 16)
+        except ValueError:
+            continue
+        if remote_port == 5432 and fields[3] == "01":
+            matches.append(line.strip())
+    return matches
+
+
+def assess_source_isolation(application, source, denied_network_id, proc_net,
+                            pg_sessions, logs, effective_configuration, captured_ms):
+    """Derive the audit solely from scoped daemon/runtime observations."""
+    app_networks = _network_ids(application)
+    source_networks = _network_ids(source)
+    established = _postgres_established_sockets(proc_net)
+    app_ips = _container_ips(application)
+    session_rows = [line.split("|", 2) for line in pg_sessions.splitlines() if line.strip()]
+    replacement_sessions = [row for row in session_rows if row and row[0] in app_ips]
+    relevant_logs = [line.strip() for line in logs.splitlines()
+                     if re.search(r"postgres|jdbc:postgresql", line, re.IGNORECASE)]
+    attempts = []
+    for line in relevant_logs:
+        failed = bool(re.search(r"denied|refused|unknown host|timed out|failed", line, re.IGNORECASE))
+        attempts.append({"at_ms": captured_ms, "container_id": application["Id"],
+                         "destination": "application-log:" + hashlib.sha256(line.encode()).hexdigest()[:16],
+                         "engine": "postgresql", "outcome": "failed" if failed else "connected"})
+    observed_environment = application.get("Config", {}).get("Env", [])
+    environment_ok = is_target_only_mongo_environment(observed_environment)
+    config_ok = (effective_configuration.get("storage") == "mongodb" and
+                 not effective_configuration.get("postgresql_enabled", True) and
+                 "mongo" in effective_configuration.get("selected_storage_bean", "").lower())
+    complete = (denied_network_id in app_networks and denied_network_id not in source_networks and
+                not (app_networks & source_networks) and not established and
+                not replacement_sessions and environment_ok and config_ok and not relevant_logs)
+    observer = {
+        "kind": "scoped-docker-network-proc-socket-pg-stat-activity",
+        "complete": complete,
+        "started_ms": captured_ms,
+        "completed_ms": now_ms(),
+        "application_container_id": application["Id"],
+        "source_container_id": source["Id"],
+        "observed_network_ids": sorted(app_networks),
+        "source_network_ids": sorted(source_networks),
+        "proc_net_sha256": hashlib.sha256(proc_net.encode()).hexdigest(),
+        "postgres_established_socket_count": len(established),
+        "pg_stat_activity_sha256": hashlib.sha256(pg_sessions.encode()).hexdigest(),
+        "replacement_postgresql_session_count": len(replacement_sessions),
+        "application_log_sha256": hashlib.sha256(logs.encode()).hexdigest(),
+        "postgres_log_line_count": len(relevant_logs),
+    }
+    return observer, attempts
+
+
+def collect_source_isolation(application_id, source_id, denied_network_id, effective_configuration):
+    captured_ms = now_ms()
+    socket_result = capture(["docker", "exec", application_id, "sh", "-c",
+                             "cat /proc/net/tcp /proc/net/tcp6"])
+    if socket_result.returncode:
+        raise RuntimeError("could not observe replacement socket tables: " + socket_result.stderr.strip())
+    session_result = capture(["docker", "exec", source_id, "sh", "-c",
+                              "psql -U \"$POSTGRES_USER\" -d banking_kata_db -At -F '|' -c "
+                              "\"select coalesce(client_addr::text,''),coalesce(application_name,''),state "
+                              "from pg_stat_activity where backend_type='client backend'\""])
+    if session_result.returncode:
+        raise RuntimeError("could not observe PostgreSQL sessions: " + session_result.stderr.strip())
+    log_result = capture(["docker", "logs", "--since", "1970-01-01T00:00:00Z", application_id])
+    if log_result.returncode:
+        raise RuntimeError("could not observe replacement logs: " + log_result.stderr.strip())
+    return assess_source_isolation(docker_inspect(application_id), docker_inspect(source_id),
+                                   denied_network_id, socket_result.stdout,
+                                   session_result.stdout, log_result.stdout + log_result.stderr,
+                                   effective_configuration, captured_ms)
 
 
 def family(workload, family_id):
@@ -418,33 +513,39 @@ def assert_schema_complete(value, schema):
 
 def replace_application(c, accounts, operation_id):
     old = docker_inspect("banking-app")
-    mongo = docker_inspect("mongodb")
+    project = _compose_labels(old).get("com.docker.compose.project")
+    if not project:
+        raise RuntimeError("banking-app is not a scoped Compose container")
+    source_before = scoped_compose_container("postgres", project)
+    mongo_before = scoped_compose_container("mongodb", project)
+    network, network_id = scoped_common_network(old, source_before, mongo_before, project)
     old_id, image = old["Id"], old["Image"]
-    mongo_mount = next((m for m in mongo.get("Mounts", []) if m.get("Destination") == "/data/db"), {})
-    mount = {"volume_id": mongo_mount.get("Name") or mongo_mount.get("Source", "mongodb"),
-             "source": mongo_mount.get("Source", "mongodb"),
-             "destination": mongo_mount.get("Destination", "/data/db")}
-    mount_id = mongo_mount.get("Name") or mongo_mount.get("Source", "mongodb")
-    networks = list(old.get("NetworkSettings", {}).get("Networks", {}))
-    network = networks[0]
+    mongo_mount = next((m for m in mongo_before.get("Mounts", [])
+                        if m.get("Destination") == "/data/db"), None)
+    if not mongo_mount:
+        raise RuntimeError("MongoDB data mount was not observed")
+    mount = {"volume_id": mongo_mount.get("Name") or mongo_mount.get("Source"),
+             "source": mongo_mount.get("Source"), "destination": mongo_mount.get("Destination")}
+
     started = now_ms()
-    disconnect = subprocess.run(["docker", "network", "disconnect", network, "postgres"],
-                                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    disconnect = capture(["docker", "network", "disconnect", network, source_before["Id"]])
     if disconnect.returncode and "not connected" not in disconnect.stderr.lower():
-        raise RuntimeError("could not deny PostgreSQL network: " + disconnect.stderr)
+        raise RuntimeError("could not deny PostgreSQL network: " + disconnect.stderr.strip())
     network_state = json.loads(run(["docker", "network", "inspect", network]))[0]
-    attached_names = {entry.get("Name") for entry in network_state.get("Containers", {}).values()}
-    if "postgres" in attached_names:
+    attached_ids = set(network_state.get("Containers", {}))
+    if source_before["Id"] in attached_ids:
         raise RuntimeError("PostgreSQL remains attached to the application network")
-    run(["docker", "rm", "-f", "banking-app"])
+
+    run(["docker", "rm", "-f", old_id])
     env = []
     for entry in replacement_environment():
         env.extend(["-e", entry])
     new_id = run(["docker", "run", "-d", "--name", "banking-app-replacement",
+                  "--label", "com.optivem.cutover.run_id=" + c.run_id,
                   "--network", network, "-p", "8080:8080"] + env + [image])
     c.container_id = new_id
     deadline = time.monotonic() + 90
-    probe_account = accounts["preexisting"]
+    probe_account = accounts.get("preexisting") or next(iter(accounts.values()))
     while time.monotonic() < deadline:
         probe = c.request("GET", "/bank-accounts/" + urllib.parse.quote(probe_account),
                           phase="target_only", route_template=ROUTES["read"][1], account=probe_account)
@@ -454,6 +555,7 @@ def replace_application(c, accounts, operation_id):
         time.sleep(1)
     else:
         raise RuntimeError("replacement application did not become ready")
+
     restart_ids = [probe["trace_id"]]
     other = accounts.get("just-created", probe_account)
     restart_ids.append(c.request("GET", "/bank-accounts/" + urllib.parse.quote(other),
@@ -470,33 +572,43 @@ def replace_application(c, accounts, operation_id):
     restart_ids.append(c.request("GET", "/bank-accounts/" + urllib.parse.quote(probe_account),
                                  phase="target_only", route_template=ROUTES["read"][1],
                                  account=probe_account)["trace_id"])
-    inspected = docker_inspect("banking-app-replacement")
-    logs = run(["docker", "logs", "banking-app-replacement"], check=False).lower()
-    if "jdbc:postgresql" in logs or "connection to postgres" in logs:
-        raise RuntimeError("replacement attempted to connect to PostgreSQL")
-    environment = inspected.get("Config", {}).get("Env", [])
-    profiles = next((x.split("=", 1)[1] for x in environment
-                     if x.startswith("SPRING_PROFILES_ACTIVE=")), "mongodb").split(",")
+
+    effective = c.internal("GET", "/internal/evidence/configuration")
+    inspected = docker_inspect(new_id)
+    mongo_after = scoped_compose_container("mongodb", project)
+    mongo_mount_after = next((m for m in mongo_after.get("Mounts", [])
+                              if m.get("Destination") == "/data/db"), None)
+    if not mongo_mount_after:
+        raise RuntimeError("MongoDB data mount disappeared")
+    mount_after = {"volume_id": mongo_mount_after.get("Name") or mongo_mount_after.get("Source"),
+                   "source": mongo_mount_after.get("Source"),
+                   "destination": mongo_mount_after.get("Destination")}
+    observer, attempts = collect_source_isolation(new_id, source_before["Id"], network_id, effective)
+    if not observer["complete"]:
+        raise RuntimeError("scoped PostgreSQL isolation audit was incomplete")
+    network_after = json.loads(run(["docker", "network", "inspect", network]))[0]
+    after_ids = set(network_after.get("Containers", {}))
+    if new_id not in after_ids or source_before["Id"] in after_ids:
+        raise RuntimeError("scoped network topology changed during audit")
+
     return {
-        "old_container_id": old_id, "new_container_id": new_id,
-        "image_digest": image,
+        "old_container_id": old_id, "new_container_id": new_id, "image_digest": image,
         "container_events": [
             {"event": "destroy", "container_id": old_id, "at_ms": started, "image_digest": image},
             {"event": "create", "container_id": new_id, "at_ms": now_ms(), "image_digest": image}],
-        "target_mount_before": mount, "target_mount_after": mount,
-        "postgresql_network_inspect": {"network": network, "network_id": observed_network_id(network),
-                                               "attached": False, "postgresql_attached": False,
-                                               "source_network_denied": True,
-                                               "inspect_command": "docker network inspect " + network,
-                                               "captured_ms": now_ms()},
-        "effective_configuration": {"storage": "mongodb", "postgresql_enabled": False,
-                                    "active_profiles": profiles,
-                                    "selected_storage_bean": "mongoBankAccountStorage"},
-        "connection_observer": {"kind": "docker-network-and-log", "complete": connection_audit_complete(),
-                                "started_ms": started, "completed_ms": now_ms()},
-        "connection_attempt_log": [], "restart_trace_ids": restart_ids,
+        "target_mount_before": mount, "target_mount_after": mount_after,
+        "postgresql_network_inspect": {
+            "network": network, "network_id": network_after["Id"],
+            "application_container_id": new_id, "postgresql_container_id": source_before["Id"],
+            "attached_container_ids": sorted(after_ids),
+            "attached": False, "postgresql_attached": False,
+            "source_network_denied": True, "captured_ms": now_ms(),
+            "inspect_command": "docker network inspect " + network},
+        "effective_configuration": effective,
+        "connection_observer": observer,
+        "connection_attempt_log": attempts,
+        "restart_trace_ids": restart_ids,
     }
-
 
 def execute(args):
     workload = json.loads(Path(args.workload).read_text())

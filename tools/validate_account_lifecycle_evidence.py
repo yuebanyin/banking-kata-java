@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import uuid
 from pathlib import Path
 
 ROUTES = {
@@ -106,6 +107,22 @@ def _workload_operation_records(workload):
     return records, operation_arrays, idempotency_arrays
 
 
+
+def _financial_alias_accounts(workload):
+    """Reproduce the public runner's value-based alias allocation."""
+    financial = next((item for item in workload.get("contract_families", [])
+                      if item.get("family_id") == "funds-linearizability"), {})
+    aliases = financial.get("initial_balances", {})
+    require(isinstance(aliases, dict), "financial initial_balances must be an object")
+    numbers = workload.get("controlled_collaborators", {}).get("account_numbers", [])
+    require(isinstance(numbers, list), "controlled account_numbers must be an array")
+    seed = int(workload.get("fixture_seed", 0))
+    result = {}
+    for index, alias in enumerate(aliases):
+        result[alias] = (str(numbers[index]) if index < len(numbers) else
+                         str(uuid.uuid5(uuid.NAMESPACE_URL, "%s:%s:%s" % (seed, index, alias))))
+    return result
+
 def validate_workload_binding(evidence, workload):
     """Bind workload declarations to their corresponding semantic evidence fields.
 
@@ -116,6 +133,7 @@ def validate_workload_binding(evidence, workload):
     semantic_accounts = _semantic_account_numbers(evidence)
     accounts = _declared_values(workload, {"account_number", "account_numbers"})
     records, operation_arrays, idempotency_arrays = _workload_operation_records(workload)
+    alias_accounts = _financial_alias_accounts(workload)
     require(accounts or records or operation_arrays or idempotency_arrays,
             "workload declares no bindable account or operation identifiers")
     missing_accounts = sorted(accounts - semantic_accounts)
@@ -147,9 +165,20 @@ def validate_workload_binding(evidence, workload):
         if isinstance(declaration.get("amount"), int):
             require(row.get("amount") == declaration["amount"],
                     "workload amount mismatch for " + operation_id)
+        expected_account = None
         if isinstance(declaration.get("account_number"), str):
-            require(row.get("account_number") == declaration["account_number"],
+            expected_account = declaration["account_number"]
+        elif isinstance(declaration.get("account"), str):
+            alias = declaration["account"]
+            require(alias in alias_accounts,
+                    "workload operation references unknown account alias: " + alias)
+            expected_account = alias_accounts[alias]
+        if expected_account is not None:
+            require(row.get("account_number") == expected_account,
                     "workload account mismatch for " + operation_id)
+            require(expected_account in semantic_accounts,
+                    "workload account alias is absent from HTTP/journal/snapshot evidence: " +
+                    declaration.get("account", expected_account))
         require(row.get("kind") == declaration["kind"],
                 "workload operation kind mismatch for " + operation_id)
         if isinstance(declaration.get("idempotency_key"), str):
@@ -162,8 +191,8 @@ def validate_workload_binding(evidence, workload):
         require(len(matching_traces) == 1,
                 "workload operation must map to exactly one candidate HTTP trace: " + operation_id)
         trace = matching_traces[0]
-        if isinstance(declaration.get("account_number"), str):
-            require(trace.get("request_account_number") == declaration["account_number"],
+        if expected_account is not None:
+            require(trace.get("request_account_number") == expected_account,
                     "workload HTTP account mismatch for " + operation_id)
         if isinstance(declaration.get("amount"), int):
             require(trace.get("request_amount") == declaration["amount"],
@@ -300,9 +329,39 @@ def validate(evidence):
     require(deployment["target_mount_before"] == deployment["target_mount_after"], "MongoDB volume changed")
     require(all(c["engine"] != "postgresql" or c["outcome"] == "denied"
                 for c in deployment["connection_attempt_log"]), "PostgreSQL connection after cutover")
+    network = deployment["postgresql_network_inspect"]
+    require(network.get("network_id") and network.get("source_network_denied") is True,
+            "PostgreSQL network denial was not directly observed")
+    require(network.get("application_container_id") == deployment["new_container_id"],
+            "network observation is not scoped to replacement container")
+    require(network.get("postgresql_container_id") and
+            network.get("postgresql_container_id") not in network.get("attached_container_ids", []),
+            "source container remains on replacement network")
+    require(deployment["new_container_id"] in network.get("attached_container_ids", []),
+            "replacement container absent from observed network")
     config = deployment["effective_configuration"]
-    require(config.get("storage") == "mongodb" and not config.get("postgresql_enabled", True),
-            "replacement is not MongoDB-only")
+    active_profiles = config.get("active_profiles", [])
+    require(config.get("storage") == "mongodb" and not config.get("postgresql_enabled", True) and
+            "target-only" in active_profiles and "adapter-persistence-jpa" not in active_profiles and
+            "mongo" in config.get("selected_storage_bean", "").lower(),
+            "replacement is not observed MongoDB-only")
+    observer = deployment["connection_observer"]
+    require(observer.get("complete") is True and
+            observer.get("application_container_id") == deployment["new_container_id"] and
+            observer.get("source_container_id") == network.get("postgresql_container_id"),
+            "connection observer is incomplete or unscoped")
+    require(observer.get("postgres_established_socket_count") == 0 and
+            observer.get("replacement_postgresql_session_count") == 0 and
+            observer.get("postgres_log_line_count") == 0,
+            "PostgreSQL connection was observed after cutover")
+    require(network.get("network_id") in observer.get("observed_network_ids", []) and
+            network.get("network_id") not in observer.get("source_network_ids", []) and
+            not (set(observer.get("observed_network_ids", [])) &
+                 set(observer.get("source_network_ids", []))),
+            "replacement and PostgreSQL still share an observed network")
+    require(all(isinstance(observer.get(key), str) and observer.get(key)
+                for key in ("proc_net_sha256", "pg_stat_activity_sha256", "application_log_sha256")),
+            "connection observations lack captured-content digests")
     restart = [by_id[x] for x in deployment["restart_trace_ids"]]
     require(all(t["container_id"] == deployment["new_container_id"] and t["status"] < 300 for t in restart),
             "failed replacement-container probe")

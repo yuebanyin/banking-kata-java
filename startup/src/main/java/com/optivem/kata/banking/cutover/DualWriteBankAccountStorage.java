@@ -91,38 +91,51 @@ public class DualWriteBankAccountStorage implements BankAccountStorage, AccountO
         return copied;
     }
 
-    /** Recover one operation reserved in MongoDB before its source transaction ran. */
+    /**
+     * Recover pending operations in durable source commit order. Recovering one request
+     * deliberately drains all committed predecessors for that account, so retries that
+     * arrive out of order cannot reorder MongoDB appliedOperationIds.
+     */
     @Override
     public Optional<String> recover(String operationId) {
-        Optional<AccountOperationJournal.Entry> saved = journal.find(operationId);
-        if (saved.isEmpty()) return Optional.empty();
-        AccountOperationJournal.Entry entry = saved.get();
-        if ("applied".equals(entry.result()) || "duplicate_ignored".equals(entry.result())) {
-            return Optional.ofNullable(emptyToNull(entry.accountNumber()));
-        }
-        Optional<BankAccountDto> sourceAccount = source.findByOperationId(operationId);
-        if (sourceAccount.isEmpty()) return Optional.empty();
-        BankAccountDto account = sourceAccount.get();
-        synchronized (lock(account.getAccountNumber())) {
-            var operation = new AccountOperationContext.Operation(entry.operationId(),
-                    entry.idempotencyKey(), entry.requestTraceId(), entry.kind());
-            AccountOperationContext.call(operation, () -> {
-                target.upsert(account);
-                return null;
-            });
-            journal.complete(operationId, account.getAccountNumber(), "applied", true,
-                    System.currentTimeMillis());
-        }
-        return Optional.of(account.getAccountNumber());
+        Optional<AccountOperationJournal.Entry> before = journal.find(operationId);
+        if (before.isEmpty()) return Optional.empty();
+        if (isComplete(before.get())) return Optional.ofNullable(emptyToNull(before.get().accountNumber()));
+        recoverPendingOperations();
+        return journal.find(operationId).filter(this::isComplete)
+                .map(AccountOperationJournal.Entry::accountNumber)
+                .map(DualWriteBankAccountStorage::emptyToNull);
     }
 
-    /** Called before the cutover application accepts traffic after a process restart. */
+    /** Called by the pre-web-server lifecycle and safe to invoke on every retry. */
     public int recoverPendingOperations() {
+        var pending = journal.findAll().stream()
+                .filter(entry -> "pending".equals(entry.result()))
+                .collect(java.util.stream.Collectors.toMap(
+                        AccountOperationJournal.Entry::operationId, entry -> entry, (left, right) -> left));
+        var ordered = source.findRecoverableOperations(pending.keySet());
         int recovered = 0;
-        for (AccountOperationJournal.Entry entry : journal.findAll()) {
-            if ("pending".equals(entry.result()) && recover(entry.operationId()).isPresent()) recovered++;
+        for (JpaBankAccountStorage.RecoverableOperation sourceOperation : ordered) {
+            AccountOperationJournal.Entry entry = pending.get(sourceOperation.operationId());
+            if (entry == null) continue;
+            BankAccountDto account = sourceOperation.account();
+            synchronized (lock(account.getAccountNumber())) {
+                var operation = new AccountOperationContext.Operation(entry.operationId(),
+                        entry.idempotencyKey(), entry.requestTraceId(), entry.kind());
+                AccountOperationContext.call(operation, () -> {
+                    target.upsert(account);
+                    return null;
+                });
+                journal.complete(entry.operationId(), account.getAccountNumber(), "applied", true,
+                        System.currentTimeMillis());
+                recovered++;
+            }
         }
         return recovered;
+    }
+
+    private boolean isComplete(AccountOperationJournal.Entry entry) {
+        return "applied".equals(entry.result()) || "duplicate_ignored".equals(entry.result());
     }
 
     private Object lock(String accountNumber) {

@@ -3,105 +3,120 @@ package com.optivem.kata.banking.adapter.driven.persistence.jpa;
 import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.internal.BankAccountRecord;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.internal.JpaBankAccountDataAccessor;
+import com.optivem.kata.banking.adapter.driven.persistence.jpa.internal.JpaSourceAccountOperationDataAccessor;
+import com.optivem.kata.banking.adapter.driven.persistence.jpa.internal.SourceAccountOperationRecord;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.mapper.BankAccountJpaMapper;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationContext;
 import com.optivem.kata.banking.core.ports.driven.BankAccountDto;
 import com.optivem.kata.banking.core.ports.driven.BankAccountStorage;
-import org.springframework.context.annotation.Primary;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Optional;
+import java.util.Collection;
 import java.util.List;
-import java.util.stream.StreamSupport;
+import java.util.Optional;
 import java.util.stream.Collectors;
-import java.util.function.Consumer;
+import java.util.stream.StreamSupport;
 
 @Component
 @Profile(ProfileNames.ADAPTER_PERSISTENCE_JPA)
 public class JpaBankAccountStorage implements BankAccountStorage {
+    public record RecoverableOperation(long sequence, String operationId, BankAccountDto account) {}
 
     private final JpaBankAccountDataAccessor dataAccessor;
     private final BankAccountJpaMapper bankAccountJpaMapper;
+    private final JpaSourceAccountOperationDataAccessor operationAccessor;
 
-    public JpaBankAccountStorage(JpaBankAccountDataAccessor dataAccessor, BankAccountJpaMapper bankAccountJpaMapper) {
+    public JpaBankAccountStorage(JpaBankAccountDataAccessor dataAccessor,
+                                 BankAccountJpaMapper bankAccountJpaMapper,
+                                 JpaSourceAccountOperationDataAccessor operationAccessor) {
         this.dataAccessor = dataAccessor;
         this.bankAccountJpaMapper = bankAccountJpaMapper;
+        this.operationAccessor = operationAccessor;
     }
 
     @Override
     public Optional<BankAccountDto> find(String accountNumber) {
-        var bankAccountRecord = dataAccessor.findByAccountNumber(accountNumber);
-
-        if(bankAccountRecord.isEmpty()) {
-            return Optional.empty();
-        }
-
-        var bankAccount = toDto(bankAccountRecord.get());
-        return Optional.of(bankAccount);
+        return dataAccessor.findByAccountNumber(accountNumber).map(this::toDto);
     }
 
     public Optional<BankAccountDto> findByOperationId(String operationId) {
-        return dataAccessor.findByLastOperationId(operationId).map(this::toDto);
+        return operationAccessor.findByOperationId(operationId)
+                .flatMap(marker -> find(marker.getAccountNumber()));
+    }
+
+    /** Return source-committed markers in database commit order, never journal iteration order. */
+    public List<RecoverableOperation> findRecoverableOperations(Collection<String> operationIds) {
+        if (operationIds.isEmpty()) return List.of();
+        return operationAccessor.findAllByOperationIdInOrderByOperationSequenceAsc(operationIds).stream()
+                .map(marker -> find(marker.getAccountNumber()).map(account -> new RecoverableOperation(
+                        marker.getOperationSequence(), marker.getOperationId(), account)))
+                .flatMap(Optional::stream)
+                .collect(Collectors.toList());
     }
 
     @Override
     public List<BankAccountDto> findAll() {
         return StreamSupport.stream(dataAccessor.findAll().spliterator(), false)
-                .map(this::toDto)
-                .collect(Collectors.toList());
+                .map(this::toDto).collect(Collectors.toList());
     }
 
     @Override
-    public void add(BankAccountDto bankAccount) {
-        var bankAccountRecord = create(bankAccount);
-        markCurrentOperation(bankAccountRecord);
-        dataAccessor.save(bankAccountRecord);
+    @Transactional
+    public void add(BankAccountDto account) {
+        dataAccessor.save(create(account));
+        persistCurrentOperation(account.getAccountNumber());
     }
 
     @Override
-    public void update(BankAccountDto bankAccountDto) {
-        var bankAccountModelOptional = findByAccountNumber(bankAccountDto.getAccountNumber());
-        bankAccountModelOptional.ifPresent(updateTheModelWithInformationFrom(bankAccountDto));
+    @Transactional
+    public void update(BankAccountDto account) {
+        dataAccessor.findByAccountNumber(account.getAccountNumber()).ifPresent(record -> {
+            dataAccessor.save(bankAccountJpaMapper.toRecord(account, record));
+            persistCurrentOperation(account.getAccountNumber());
+        });
     }
 
-    private BankAccountRecord create(BankAccountDto bankAccount) {
-        var bankAccountRecord = new BankAccountRecord();
-        bankAccountRecord.setId(bankAccount.getAccountId());
-        bankAccountRecord.setAccountNumber(bankAccount.getAccountNumber());
-        bankAccountRecord.setNationalIdentityNumber(bankAccount.getNationalIdentityNumber());
-        bankAccountRecord.setFirstName(bankAccount.getFirstName());
-        bankAccountRecord.setLastName(bankAccount.getLastName());
-        bankAccountRecord.setOpeningDate(bankAccount.getOpeningDate());
-        bankAccountRecord.setBalance(bankAccount.getBalance());
-        return bankAccountRecord;
+    @Override
+    @Transactional
+    public void upsert(BankAccountDto account) {
+        if (dataAccessor.findByAccountNumber(account.getAccountNumber()).isPresent()) update(account);
+        else add(account);
     }
 
-    private BankAccountDto toDto(BankAccountRecord bankAccountRecord) {
+    private void persistCurrentOperation(String accountNumber) {
+        AccountOperationContext.current().ifPresent(operation -> {
+            if (operationAccessor.findByOperationId(operation.operationId()).isEmpty()) {
+                var marker = new SourceAccountOperationRecord();
+                marker.setOperationId(operation.operationId());
+                marker.setAccountNumber(accountNumber);
+                operationAccessor.save(marker);
+            }
+        });
+    }
+
+    private BankAccountRecord create(BankAccountDto account) {
+        var record = new BankAccountRecord();
+        record.setId(account.getAccountId());
+        record.setAccountNumber(account.getAccountNumber());
+        record.setNationalIdentityNumber(account.getNationalIdentityNumber());
+        record.setFirstName(account.getFirstName());
+        record.setLastName(account.getLastName());
+        record.setOpeningDate(account.getOpeningDate());
+        record.setBalance(account.getBalance());
+        return record;
+    }
+
+    private BankAccountDto toDto(BankAccountRecord record) {
         var dto = new BankAccountDto();
-        dto.setAccountId(bankAccountRecord.getId());
-        dto.setAccountNumber(bankAccountRecord.getAccountNumber());
-        dto.setNationalIdentityNumber(bankAccountRecord.getNationalIdentityNumber());
-        dto.setFirstName(bankAccountRecord.getFirstName());
-        dto.setLastName(bankAccountRecord.getLastName());
-        dto.setOpeningDate(bankAccountRecord.getOpeningDate());
-        dto.setBalance(bankAccountRecord.getBalance());
+        dto.setAccountId(record.getId());
+        dto.setAccountNumber(record.getAccountNumber());
+        dto.setNationalIdentityNumber(record.getNationalIdentityNumber());
+        dto.setFirstName(record.getFirstName());
+        dto.setLastName(record.getLastName());
+        dto.setOpeningDate(record.getOpeningDate());
+        dto.setBalance(record.getBalance());
         return dto;
-    }
-
-    private void markCurrentOperation(BankAccountRecord record) {
-        AccountOperationContext.current().ifPresent(operation -> record.setLastOperationId(operation.operationId()));
-    }
-
-    private Optional<BankAccountRecord> findByAccountNumber(String accountNumber) {
-        return dataAccessor.findByAccountNumber(accountNumber);
-    }
-
-    private Consumer<BankAccountRecord> updateTheModelWithInformationFrom(BankAccountDto bankAccountDto) {
-        return bankAccountRecord -> {
-            var updatedBankAccountModel = bankAccountJpaMapper.toRecord(bankAccountDto, bankAccountRecord);
-            markCurrentOperation(updatedBankAccountModel);
-            dataAccessor.save(updatedBankAccountModel);
-        };
     }
 }
