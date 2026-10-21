@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @Primary
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class DualWriteBankAccountStorage implements BankAccountStorage, AccountOperationRecovery {
     private final JpaBankAccountStorage source;
     private final MongoBankAccountStorage target;

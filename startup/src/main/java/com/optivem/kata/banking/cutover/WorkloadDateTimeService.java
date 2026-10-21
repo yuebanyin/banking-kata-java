@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 @Component
 @Primary
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class WorkloadDateTimeService implements DateTimeService {
     private final AtomicReference<LocalDateTime> controlled = new AtomicReference<>();
     public void set(LocalDateTime value) { controlled.set(value); }

@@ -10,7 +10,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 @Component
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class AccountCutoverCoordinator {
     public record Interval(String intervalId, String kind, long startedMs, long completedMs) {}
 

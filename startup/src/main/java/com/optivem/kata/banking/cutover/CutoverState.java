@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class CutoverState {
     private final AtomicBoolean mongoReads = new AtomicBoolean(false);
     public boolean mongoReads() { return mongoReads.get(); }

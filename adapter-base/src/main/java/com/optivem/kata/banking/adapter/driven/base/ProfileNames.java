@@ -6,6 +6,7 @@ public class ProfileNames {
     public static final String ADAPTER_PERSISTENCE_JDBC = "adapter-persistence-jdbc";
     public static final String ADAPTER_PERSISTENCE_MONGO = "adapter-persistence-mongo";
     public static final String ACCOUNT_CUTOVER = "account-cutover";
+    public static final String TARGET_ONLY = "target-only";
     public static final String ADAPTER_PERSISTENCE_REDIS = "adapter-persistence-redis";
     public static final String ADAPTER_TIME_SYSTEM = "adapter-time-system";
     public static final String ADAPTER_AUTH_FAKE = "adapter-auth-fake";

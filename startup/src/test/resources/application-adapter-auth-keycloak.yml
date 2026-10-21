@@ -4,10 +4,10 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: ${KEYCLOAK_REALM_URL}
-          jwk-set-uri: ${KEYCLOAK_REALM_URL}/protocol/openid-connect/certs
+          issuer-uri: ${KEYCLOAK_REALM_URL:http://localhost:10000/auth/realms/banking-kata}
+          jwk-set-uri: ${KEYCLOAK_REALM_URL:http://localhost:10000/auth/realms/banking-kata}/protocol/openid-connect/certs
 
 
-token-uri: ${KEYCLOAK_REALM_URL}/protocol/openid-connect/token
-client-id: ${KEYCLOAK_TEST_CLIENT_ID}
-client-secret: ${KEYCLOAK_TEST_CLIENT_SECRET}
+token-uri: ${KEYCLOAK_REALM_URL:http://localhost:10000/auth/realms/banking-kata}/protocol/openid-connect/token
+client-id: ${KEYCLOAK_TEST_CLIENT_ID:test-client}
+client-secret: ${KEYCLOAK_TEST_CLIENT_SECRET:B9N1WDFfMuZmYuEzXSbRC739YGaE7kb5}

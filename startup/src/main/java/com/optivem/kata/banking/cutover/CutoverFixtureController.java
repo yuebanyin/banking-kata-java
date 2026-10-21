@@ -17,7 +17,7 @@ import java.time.OffsetDateTime;
 /** Controlled collaborators used only by repeatable cutover workloads. */
 @RestController
 @RequestMapping("/internal/cutover/fixtures")
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class CutoverFixtureController {
     private final ObjectProvider<FakeNationalIdentityGateway> identities;
     private final ObjectProvider<FakeCustomerGateway> customers;

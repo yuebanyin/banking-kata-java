@@ -11,7 +11,7 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/internal/cutover")
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class CutoverAdminController {
     private final AccountCutoverCoordinator coordinator;
     private final AccountOperationJournal journal;

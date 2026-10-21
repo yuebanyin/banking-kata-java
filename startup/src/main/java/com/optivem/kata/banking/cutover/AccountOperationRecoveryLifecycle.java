@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
  * uses a near-maximum phase, while this recovery gate uses the minimum phase.
  */
 @Component
-@Profile(ProfileNames.ACCOUNT_CUTOVER)
+@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
 public class AccountOperationRecoveryLifecycle implements SmartLifecycle {
     private final DualWriteBankAccountStorage storage;
     private volatile boolean running;
