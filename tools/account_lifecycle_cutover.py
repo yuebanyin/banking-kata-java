@@ -393,7 +393,7 @@ class Collector:
         return trace
 
     def request(self, method, path, *, body=None, headers=None, origin="candidate",
-                phase="post_cutover", route_template=None, comparison_id=None,
+                phase="target_only", route_template=None, comparison_id=None,
                 account=None, amount=None, operation_id=None, idempotency_key=None):
         headers = dict(headers or {})
         if origin == "source":
@@ -896,8 +896,18 @@ def execute(args):
 
     for observation in plan["observations"]:
         if observation.get("phase") in ("post_cutover", "target_only"):
-            lifecycle_observation(c, observation, "post_cutover", plan, accounts, allocation)
-    post = latency_samples(c, "post_cutover", "candidate", accounts, missing_id)
+            lifecycle_observation(c, observation, "target_only", plan, accounts, allocation)
+    post = latency_samples(c, "target_only", "candidate", accounts, missing_id)
+
+    # Capture target state on both sides of application replacement.  The first
+    # direct query proves what was retained; final reconciliation is collected
+    # from the same MongoDB volume after the target-only container has run.
+    mongo_before = docker_inspect("mongodb")
+    mongo_mount_before = next(
+        (m for m in mongo_before.get("Mounts", []) if m.get("Destination") == "/data/db"), {})
+    volume_before = mongo_mount_before.get("Name") or mongo_mount_before.get(
+        "Source", "mongodb")
+    pre_replacement_accounts = direct_mongo_accounts()
 
     deployment = replace_application(c, accounts, run_id + "-restart-write")
     # The target-only controller exposes the durable Mongo journal directly.
@@ -909,10 +919,16 @@ def execute(args):
              "source": mongo_mount.get("Source", "mongodb"),
              "destination": mongo_mount.get("Destination", "/data/db")}
     mount_id = mongo_mount.get("Name") or mongo_mount.get("Source", "mongodb")
-    snapshots = [{"snapshot_id": run_id + "-final", "purpose": "final_reconciliation",
-                  "captured_ms": now_ms(), "engine": "mongodb",
-                  "query": "direct mongosh accountNumber scan", "volume_id": mount_id,
-                  "accounts": direct_mongo_accounts()}]
+    snapshots = [
+        {"snapshot_id": run_id + "-pre-replacement", "purpose": "pre_replacement",
+         "captured_ms": now_ms(), "engine": "mongodb",
+         "query": "direct_mongodb_query", "volume_id": volume_before,
+         "accounts": pre_replacement_accounts},
+        {"snapshot_id": run_id + "-final", "purpose": "final_reconciliation",
+         "captured_ms": now_ms(), "engine": "mongodb",
+         "query": "direct_mongodb_query", "volume_id": mount_id,
+         "accounts": direct_mongo_accounts()},
+    ]
     intervals = statuses["cutover"].get("intervals", [])
     # cutover status includes the previously completed backfill interval.
     unique = {row["intervalId"]: {"interval_id": row["intervalId"], "kind": row["kind"],

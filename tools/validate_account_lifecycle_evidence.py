@@ -373,13 +373,16 @@ def validate(evidence):
         baseline, post = part["baseline_trace_ids"], part["post_cutover_trace_ids"]
         require(len(baseline) >= 20 and len(post) >= 20, "latency partition needs 20 samples per period")
         samples = []
-        for ids in (baseline, post):
+        for period, ids in enumerate((baseline, post)):
             current = []
             for trace_id in ids:
                 require(trace_id in by_id, "orphan latency trace")
                 trace = by_id[trace_id]
                 require((trace["method"], trace["route_template"]) ==
                         (part["method"], part["route_template"]), "latency route mismatch")
+                expected_phase = "source_baseline" if period == 0 else "target_only"
+                require(trace["phase"] == expected_phase,
+                        "latency trace has wrong observation phase")
                 current.append(trace["completed_ms"] - trace["started_ms"])
             samples.append(current)
         require(nearest_p95(samples[1]) <= nearest_p95(samples[0]) + 10, "p95 regression exceeds 10ms")
