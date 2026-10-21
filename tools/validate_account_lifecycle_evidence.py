@@ -60,44 +60,117 @@ def _declared_values(workload, field_names):
     return values
 
 
-def validate_workload_binding(evidence, workload):
-    """Reject valid-but-stale evidence produced for a different workload.
+def _semantic_account_numbers(evidence):
+    """Account identifiers observed in account-specific evidence fields only."""
+    values = set()
+    for trace in evidence.get("http_trace", []):
+        account = trace.get("request_account_number")
+        if isinstance(account, str):
+            values.add(account)
+        body = trace.get("body")
+        if isinstance(body, dict) and isinstance(body.get("accountNumber"), str):
+            values.add(body["accountNumber"])
+    for row in evidence.get("operation_journal", []):
+        if isinstance(row.get("account_number"), str):
+            values.add(row["account_number"])
+    for snapshot in evidence.get("mongo_snapshots", []):
+        for account in snapshot.get("accounts", []):
+            if isinstance(account.get("accountNumber"), str):
+                values.add(account["accountNumber"])
+    return values
 
-    Public-format workloads declare controlled account and operation identifiers.  Those
-    identifiers are opaque: semantic validation binds them to observed leaves instead of
-    depending on the public fixture's labels or values.
-    """
-    observed = set(_leaf_strings(evidence))
-    accounts = _declared_values(workload, {"account_number", "account_numbers"})
-    operations = _declared_values(workload, {
-        "operation_id", "operation_ids", "idempotency_key", "idempotency_keys"})
-    required = accounts | operations
-    require(required, "workload declares no bindable account or operation identifiers")
-    missing = sorted(value for value in required if value not in observed)
-    require(not missing, "evidence does not match workload identifiers: " + ", ".join(missing[:5]))
 
-    # Bind declared financial payloads, when present, to their durable journal row.
-    journal = {row["operation_id"]: row for row in evidence["operation_journal"]}
-    def bind_payloads(value):
+def _workload_operation_records(workload):
+    """Yield workload records which describe externally observable mutations."""
+    records = []
+    operation_arrays = set()
+    idempotency_arrays = set()
+
+    def visit(value):
         if isinstance(value, dict):
+            kind = value.get("kind")
             operation_id = value.get("operation_id")
-            if operation_id in journal:
-                row = journal[operation_id]
-                if isinstance(value.get("amount"), int):
-                    require(row["amount"] == value["amount"],
-                            "workload amount mismatch for " + operation_id)
-                if isinstance(value.get("account_number"), str):
-                    require(row["account_number"] == value["account_number"],
-                            "workload account mismatch for " + operation_id)
-                if isinstance(value.get("kind"), str) and value["kind"] in ("create", "deposit", "withdraw"):
-                    require(row["kind"] == value["kind"],
-                            "workload operation kind mismatch for " + operation_id)
-            for child in value.values():
-                bind_payloads(child)
+            if isinstance(operation_id, str) and kind in ("create", "deposit", "withdraw"):
+                records.append(value)
+            for key, child in value.items():
+                if key == "operation_ids":
+                    operation_arrays.update(_leaf_strings(child))
+                elif key == "idempotency_keys":
+                    idempotency_arrays.update(_leaf_strings(child))
+                visit(child)
         elif isinstance(value, list):
             for child in value:
-                bind_payloads(child)
-    bind_payloads(workload)
+                visit(child)
+
+    visit(workload)
+    return records, operation_arrays, idempotency_arrays
+
+
+def validate_workload_binding(evidence, workload):
+    """Bind workload declarations to their corresponding semantic evidence fields.
+
+    Provenance, run IDs and other arbitrary strings deliberately do not count.  A
+    workload account must occur in an account field, and each declared mutation
+    must occur as the matching journal row and HTTP request.
+    """
+    semantic_accounts = _semantic_account_numbers(evidence)
+    accounts = _declared_values(workload, {"account_number", "account_numbers"})
+    records, operation_arrays, idempotency_arrays = _workload_operation_records(workload)
+    require(accounts or records or operation_arrays or idempotency_arrays,
+            "workload declares no bindable account or operation identifiers")
+    missing_accounts = sorted(accounts - semantic_accounts)
+    require(not missing_accounts,
+            "evidence does not match workload account identifiers: " +
+            ", ".join(missing_accounts[:5]))
+
+    journals = evidence.get("operation_journal", [])
+    journal_by_operation = {row.get("operation_id"): row for row in journals}
+    journal_operations = {value for value in journal_by_operation if isinstance(value, str)}
+    journal_idempotency = {row.get("idempotency_key") for row in journals
+                           if isinstance(row.get("idempotency_key"), str)}
+    traces = evidence.get("http_trace", [])
+
+    missing_operations = sorted(operation_arrays - journal_operations)
+    require(not missing_operations,
+            "evidence does not match workload operation identifiers: " +
+            ", ".join(missing_operations[:5]))
+    missing_keys = sorted(idempotency_arrays - journal_idempotency)
+    require(not missing_keys,
+            "evidence does not match workload idempotency identifiers: " +
+            ", ".join(missing_keys[:5]))
+
+    for declaration in records:
+        operation_id = declaration["operation_id"]
+        require(operation_id in journal_by_operation,
+                "evidence does not match workload operation identifier: " + operation_id)
+        row = journal_by_operation[operation_id]
+        if isinstance(declaration.get("amount"), int):
+            require(row.get("amount") == declaration["amount"],
+                    "workload amount mismatch for " + operation_id)
+        if isinstance(declaration.get("account_number"), str):
+            require(row.get("account_number") == declaration["account_number"],
+                    "workload account mismatch for " + operation_id)
+        require(row.get("kind") == declaration["kind"],
+                "workload operation kind mismatch for " + operation_id)
+        if isinstance(declaration.get("idempotency_key"), str):
+            require(row.get("idempotency_key") == declaration["idempotency_key"],
+                    "workload idempotency key mismatch for " + operation_id)
+
+        matching_traces = [trace for trace in traces
+                           if trace.get("origin") == "candidate" and
+                           trace.get("request_operation_id") == operation_id]
+        require(len(matching_traces) == 1,
+                "workload operation must map to exactly one candidate HTTP trace: " + operation_id)
+        trace = matching_traces[0]
+        if isinstance(declaration.get("account_number"), str):
+            require(trace.get("request_account_number") == declaration["account_number"],
+                    "workload HTTP account mismatch for " + operation_id)
+        if isinstance(declaration.get("amount"), int):
+            require(trace.get("request_amount") == declaration["amount"],
+                    "workload HTTP amount mismatch for " + operation_id)
+        if isinstance(declaration.get("idempotency_key"), str):
+            require(trace.get("request_idempotency_key") == declaration["idempotency_key"],
+                    "workload HTTP idempotency key mismatch for " + operation_id)
 
 
 def validate(evidence):

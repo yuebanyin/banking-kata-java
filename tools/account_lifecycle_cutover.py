@@ -57,6 +57,31 @@ def observed_network_id(reference):
         raise RuntimeError("no daemon-observed Docker network ID for " + reference)
     return identifiers[0]
 
+def replacement_environment():
+    """Environment passed to the source-isolated replacement container."""
+    return [
+        "SPRING_PROFILES_ACTIVE=adapter-persistence-mongo,target-only,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none",
+        "MONGODB_URI=mongodb://root:cutover@mongodb:27017/?authSource=admin",
+        "MONGODB_DATABASE_NAME=banking_kata_db",
+        "CUTOVER_EFFECTIVE_STORAGE=mongodb",
+    ]
+
+
+def is_target_only_mongo_environment(environment):
+    """Return true only for an explicit MongoDB-only replacement configuration."""
+    variables = {}
+    for entry in environment:
+        if isinstance(entry, str) and "=" in entry:
+            key, value = entry.split("=", 1)
+            variables[key] = value
+    profiles = {item.strip() for item in
+                variables.get("SPRING_PROFILES_ACTIVE", "").split(",") if item.strip()}
+    return ("adapter-persistence-mongo" in profiles and
+            "target-only" in profiles and
+            "adapter-persistence-jpa" not in profiles and
+            variables.get("CUTOVER_EFFECTIVE_STORAGE") == "mongodb")
+
+
 def connection_audit_complete():
     """Prove source isolation from daemon topology and live connection tables.
 
@@ -76,8 +101,8 @@ def connection_audit_complete():
     source = next((item for item in inspected
                    if "postgres" in item.get("Config", {}).get("Image", "").lower()), None)
     candidates = [item for item in inspected
-                  if any("adapter-persistence-mongo" in value and "target-only" in value
-                         for value in item.get("Config", {}).get("Env", []))]
+                  if is_target_only_mongo_environment(
+                      item.get("Config", {}).get("Env", []))]
     if source is None or not candidates:
         return False
     application = max(candidates, key=lambda item: item.get("Created", ""))
@@ -375,51 +400,19 @@ def direct_mongo_accounts(container="mongodb"):
     return sorted(result, key=lambda row: row["accountNumber"])
 
 
-def complete_schema(value, schema, root, name="value"):
-    if "$ref" in schema:
-        schema = root["$defs"][schema["$ref"].rsplit("/", 1)[-1]]
-    declared = schema.get("type")
-    allowed = declared if isinstance(declared, list) else [declared]
-    nullable = "null" in allowed
-    concrete = next((item for item in allowed if item != "null"), None)
-    matches = {"object": lambda item: isinstance(item, dict),
-               "array": lambda item: isinstance(item, list),
-               "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
-               "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
-               "boolean": lambda item: isinstance(item, bool),
-               "string": lambda item: isinstance(item, str)}
-    if value is not None and concrete in matches and not matches[concrete](value):
-        value = None
-    if value is None and nullable:
-        return None
-    if value is None:
-        if "const" in schema: value = schema["const"]
-        elif "enum" in schema: value = schema["enum"][0]
-        else:
-            kind = schema.get("type")
-            if isinstance(kind, list): kind = next((x for x in kind if x != "null"), "string")
-            if kind == "boolean":
-                value = any(token in name.lower() for token in ("denied", "complete", "retained"))
-            elif kind == "string" and any(token in name.lower() for token in ("profile", "storage")):
-                value = "mongodb"
-            else:
-                value = {"object": {}, "array": [], "integer": schema.get("minimum", 0),
-                         "number": schema.get("minimum", 0), "string": "observed"}.get(kind)
-    if isinstance(value, dict):
-        properties = schema.get("properties", {})
-        if schema.get("additionalProperties") is False:
-            for key in set(value) - set(properties):
-                del value[key]
-        for key in schema.get("required", []):
-            value[key] = complete_schema(value.get(key), properties.get(key, {}), root, key)
-        for key in list(value):
-            if key in properties:
-                value[key] = complete_schema(value[key], properties[key], root, key)
-    elif isinstance(value, list):
-        needed = schema.get("minItems", 0)
-        while len(value) < needed:
-            value.append(complete_schema(None, schema.get("items", {}), root, name))
-        value = [complete_schema(item, schema.get("items", {}), root, name) for item in value]
+def assert_schema_complete(value, schema):
+    """Reject absent or malformed observations without manufacturing evidence."""
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise RuntimeError("jsonschema is required to validate collected evidence") from exc
+    errors = sorted(jsonschema.Draft202012Validator(schema).iter_errors(value),
+                    key=lambda error: list(error.absolute_path))
+    if errors:
+        error = errors[0]
+        location = ".".join(str(item) for item in error.absolute_path) or "$"
+        raise ValueError("incomplete observed evidence at %s: %s" %
+                         (location, error.message))
     return value
 
 
@@ -444,9 +437,9 @@ def replace_application(c, accounts, operation_id):
     if "postgres" in attached_names:
         raise RuntimeError("PostgreSQL remains attached to the application network")
     run(["docker", "rm", "-f", "banking-app"])
-    env = ["-e", "SPRING_PROFILES_ACTIVE=adapter-persistence-mongo,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none",
-           "-e", "MONGODB_URI=mongodb://root:cutover@mongodb:27017/?authSource=admin",
-           "-e", "MONGODB_DATABASE_NAME=banking_kata_db", "-e", "CUTOVER_EFFECTIVE_STORAGE=mongodb"]
+    env = []
+    for entry in replacement_environment():
+        env.extend(["-e", entry])
     new_id = run(["docker", "run", "-d", "--name", "banking-app-replacement",
                   "--network", network, "-p", "8080:8080"] + env + [image])
     c.container_id = new_id
@@ -579,7 +572,7 @@ def execute(args):
                 "latency_partitions": partitions, "deployment_evidence": deployment}
     schema_path = ROOT / "tb4_artifacts/candidate_evidence.schema.json"
     schema = json.loads(schema_path.read_text())
-    evidence = complete_schema(evidence, schema, schema)
+    assert_schema_complete(evidence, schema)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
