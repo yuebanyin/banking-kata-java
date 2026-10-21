@@ -106,7 +106,7 @@ public class BankAccountController extends BaseController {
         var request = ViewAccountRequest.builder().accountNumber(accountNumber).build();
         try {
             ViewAccountResponse response = pipeline.send(request);
-            if (projectionWriter != null) {
+            if (projectionWriter != null && !AccountStorageRoute.isSourceOnly()) {
                 projectionWriter.updateObservedScore(accountNumber, response.getScore().toString());
             }
             return new ResponseEntity<>(response, HttpStatus.OK);
