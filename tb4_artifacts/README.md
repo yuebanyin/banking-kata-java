@@ -27,3 +27,14 @@ The independent verifier closes every evidence link in both directions:
 - For every held-out financial account, the final direct MongoDB document must exactly match independent initial truth plus replay: account number, full name, score, final balance, and complete applied-operation ID list.
 
 Duplicate/orphan trace IDs, comparison sides, journal links, account documents, and snapshot operation IDs are invalid evidence rather than ignorable telemetry.
+
+### Evidence schema v5 closure rules
+
+The private runtime validates candidate evidence against `candidate_evidence.schema.json`
+before applying semantic checks. During every declared migration interval, overlap
+counts include only successful GETs and acknowledged, journal-linked 2xx mutations;
+failed POST attempts do not establish live write traffic. Every successful candidate
+GET must name its requested account and match independent replay at that request's
+observation point. Replacement-container probes must include successful reads of an
+old account and a migrated account, one successful journaled write, and a successful
+read-after-write, all from the new container.

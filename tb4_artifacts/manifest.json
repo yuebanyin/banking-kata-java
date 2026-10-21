@@ -196,7 +196,7 @@
       "timeout_seconds": 30
     },
     {
-      "command": "python3 cutover_assets/oracle.py cutover_assets/held_out_cases.json cutover_assets/passing_candidate_evidence.json cutover_assets/expected_results.json",
+      "command": "python3 cutover_assets/oracle.py cutover_assets/held_out_cases.json cutover_assets/passing_candidate_evidence.json cutover_assets/expected_results.json /root/valentinajemuovic__banking-kata-java/tb4_artifacts/candidate_evidence.schema.json",
       "cwd": "grader",
       "timeout_seconds": 30
     }

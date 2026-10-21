@@ -40,3 +40,15 @@ Author repair after Michele’s third review
 At commit `3d99e619e63d3b02358b2181329f3c74d85e5e10`, Michele independently demonstrated four accepted adversarial mutations: an unjournaled successful deposit, a mismatched successful comparison pair outside the fixed required list, an unjournaled target operation ID on a financial account, and corrupted held-out financial identity. She found no new latency or redeployment-family defect.
 
 Schema version 5 closes those gaps without changing any reference constraint. All comparison IDs are globally paired and compared; successful or operation-bearing candidate POSTs and journals account for each other exactly once; snapshot operation IDs are globally attributable; and every held-out financial account is reconciled to independent identity, replayed balance, and the complete ordered operation list. Private regressions cover all four mutations plus the existing orphan/duplicate checks. Michele remains the designated challenger; this authoring record does not claim her still-pending post-repair re-review.
+
+## Version 5 evidence-closure repair
+
+The author closed the latest adversarial gaps without changing any contextual
+constraint: the private runtime now applies the public JSON Schema first; interval
+writes must be successful, acknowledged, and journal-linked; each successful
+candidate GET is independently replayed at its observed point; and fresh-container
+probes are bound to successful old/new reads plus a journaled write and read-after-
+write. Private regressions cover schema-version mismatch, repeated latency samples,
+4xx-only interval traffic, a parity-preserving impossible intermediate balance, and
+failed replacement probes. Michele remains the independent challenger for the next
+post-repair review; no post-repair approval is claimed here.

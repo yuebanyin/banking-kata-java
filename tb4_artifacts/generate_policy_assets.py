@@ -190,3 +190,16 @@ The independent verifier closes every evidence link in both directions:
 
 Duplicate/orphan trace IDs, comparison sides, journal links, account documents, and snapshot operation IDs are invalid evidence rather than ignorable telemetry.
 """)
+
+# Candidate evidence contract version 5 closes the version-4/version-5 split that
+# would otherwise make policy-conforming evidence impossible to verify.
+_evidence_schema_path=ROOT/"candidate_evidence.schema.json"
+_evidence_schema=json.loads(_evidence_schema_path.read_text(encoding="utf-8"))
+_evidence_schema["properties"]["schema_version"]["const"]=5
+dump("candidate_evidence.schema.json",_evidence_schema)
+
+_evidence_closure='''\n### Evidence schema v5 closure rules\n\nThe private runtime validates candidate evidence against `candidate_evidence.schema.json`\nbefore applying semantic checks. During every declared migration interval, overlap\ncounts include only successful GETs and acknowledged, journal-linked 2xx mutations;\nfailed POST attempts do not establish live write traffic. Every successful candidate\nGET must name its requested account and match independent replay at that request's\nobservation point. Replacement-container probes must include successful reads of an\nold account and a migrated account, one successful journaled write, and a successful\nread-after-write, all from the new container.\n'''
+_readme_path=ROOT/"README.md"
+_readme=_readme_path.read_text(encoding="utf-8")
+if "### Evidence schema v5 closure rules" not in _readme:
+    _readme_path.write_text(_readme+_evidence_closure,encoding="utf-8")
