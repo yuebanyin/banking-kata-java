@@ -51,24 +51,43 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
                    "account_number": "ACC-NEW", "amount": 0,
                    "acknowledged": True, "result": result,
                    "started_ms": 240, "completed_ms": 245}
-        return [journal], [create, read]
+        source_truth = {"trace_id": "source-truth-new", "origin": "source",
+                        "method": "GET",
+                        "route_template": "/bank-accounts/{accountNumber}",
+                        "status": 200, "started_ms": 246, "completed_ms": 249,
+                        "request_account_number": "ACC-NEW",
+                        "body": {"accountNumber": "ACC-NEW", "fullName": "New Holder",
+                                 "balance": 0, "score": "C"}}
+        return [journal], [create, source_truth, read]
 
     def test_accepts_one_linked_applied_creation_between_snapshots(self):
         journals, traces = self.rows()
         self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
 
-    def test_accepts_one_linked_duplicate_ignored_creation_between_snapshots(self):
+    def test_rejects_duplicate_only_creation_between_snapshots(self):
         evidence = self.evidence()
         evidence["mongo_snapshots"][1]["accounts"][0]["appliedOperationIds"] = []
         journals, traces = self.rows("duplicate_ignored")
-        self.validator.validate_mongo_snapshots(evidence, journals, traces)
+        with self.assertRaisesRegex(ValueError, "applied creation journal"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
     def test_rejects_self_corroborating_snapshot_and_get_without_creation(self):
         evidence = self.evidence()
         evidence["mongo_snapshots"][1]["accounts"][0]["appliedOperationIds"] = []
         journals, traces = self.rows()
         with self.assertRaisesRegex(ValueError, "exactly one successful creation POST"):
-            self.validator.validate_mongo_snapshots(evidence, [], traces[1:])
+            self.validator.validate_mongo_snapshots(evidence, [], traces[2:])
+
+
+    def test_rejects_matching_forged_final_snapshot_and_restart_get(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"fullName": "Forged Holder", "balance": 777, "score": "A"})
+        journals, traces = self.rows()
+        traces[-1]["body"].update({"fullName": "Forged Holder", "balance": 777,
+                                   "score": "A"})
+        with self.assertRaisesRegex(ValueError, "independent source truth"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
     def test_rejects_creation_operation_identity_mismatch(self):
         journals, traces = self.rows()

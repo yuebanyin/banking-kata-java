@@ -588,8 +588,11 @@ def lifecycle_observation(c, observation, phase, plan, accounts, allocation):
         if customer_case == "eligible" and result[0]["status"] == 201:
             created = result[0]["body"]["accountNumber"]
             accounts["just-created"] = created
-            c.request("GET", "/bank-accounts/" + urllib.parse.quote(created), phase=phase,
-                      route_template=ROUTES["read"][1], account=created)
+            # Capture the independently reconstructed PostgreSQL/scoring view
+            # immediately after creation.  This is creation truth for later
+            # target-only reconciliation, not a second public mutation.
+            paired(c, "GET", "/bank-accounts/" + urllib.parse.quote(created), phase=phase,
+                   route_template=ROUTES["read"][1], account=created)
         return
     if method == "GET":
         alias = observation.get("account_case", "preexisting")

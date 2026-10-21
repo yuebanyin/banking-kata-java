@@ -374,15 +374,19 @@ def validate_mongo_snapshots(evidence, journals, traces):
                 "final-only account requires exactly one successful creation POST: " + number)
         creation = creation_posts[0]
 
+        # A duplicate receipt proves only that an operation identity was seen;
+        # it cannot explain a document that did not exist in the earlier
+        # snapshot.  The durable record responsible for first materializing the
+        # account must itself be applied.
         creation_journals = [row for row in journals
                              if row.get("kind") == "create"
                              and row.get("account_number") == number
                              and row.get("acknowledged") is True
-                             and row.get("result") in ("applied", "duplicate_ignored")
+                             and row.get("result") == "applied"
                              and lower < row.get("started_ms", -1)
                              and row.get("completed_ms", upper + 1) <= upper]
         require(len(creation_journals) == 1,
-                "final-only account requires exactly one acknowledged creation journal: " + number)
+                "final-only account requires exactly one applied creation journal: " + number)
         creation_journal = creation_journals[0]
         require(creation_journal.get("request_trace_id") == creation.get("trace_id"),
                 "final-only creation POST/journal trace mismatch: " + number)
@@ -394,9 +398,51 @@ def validate_mongo_snapshots(evidence, journals, traces):
         require(isinstance(idempotency_key, str) and idempotency_key and
                 creation.get("request_idempotency_key") == idempotency_key,
                 "final-only creation idempotency identity mismatch: " + number)
-        if creation_journal["result"] == "applied":
-            require(operation_id in after[number]["appliedOperationIds"],
-                    "final-only applied creation is absent from operation order: " + number)
+        require(operation_id in after[number]["appliedOperationIds"],
+                "final-only applied creation is absent from operation order: " + number)
+
+        # The candidate GET and MongoDB snapshot are the same target-side
+        # observation and may agree while both are corrupt.  Anchor immutable
+        # identity, score, and initial balance in the separately collected JPA
+        # source receipt.  lifecycle_observation records this GET immediately
+        # after the successful creation and before returning to the workload.
+        source_reads = [row for row in traces
+                        if row.get("origin") == "source"
+                        and row.get("method") == "GET"
+                        and row.get("route_template") == "/bank-accounts/{accountNumber}"
+                        and row.get("status") == 200
+                        and row.get("request_account_number") == number
+                        and row.get("started_ms", -1) >= creation.get("completed_ms", upper + 1)
+                        and row.get("completed_ms", upper + 1) <= upper]
+        require(source_reads,
+                "final-only account lacks independent source creation truth: " + number)
+        truth = min(source_reads, key=lambda row: (row["completed_ms"], row["trace_id"]))
+        body = truth.get("body")
+        require(isinstance(body, dict) and body.get("accountNumber") == number,
+                "final-only source truth has wrong account identity: " + number)
+        require(isinstance(body.get("fullName"), str) and body["fullName"],
+                "final-only source truth has invalid fullName: " + number)
+        require(isinstance(body.get("balance"), int),
+                "final-only source truth has invalid balance: " + number)
+        require(body.get("score") in ("A", "B", "C"),
+                "final-only source truth has invalid score: " + number)
+
+        expected_balance = body["balance"]
+        for operation in journals:
+            if (operation.get("acknowledged") is True
+                    and operation.get("result") == "applied"
+                    and operation.get("account_number") == number
+                    and operation.get("kind") in ("deposit", "withdraw")
+                    and truth["completed_ms"] < operation.get("completed_ms", -1) <= upper):
+                expected_balance += (operation["amount"] if operation["kind"] == "deposit"
+                                     else -operation["amount"])
+        current = after[number]
+        require(current["fullName"] == body["fullName"],
+                "final-only fullName differs from independent source truth: " + number)
+        require(current["score"] == body["score"],
+                "final-only score differs from independent source truth: " + number)
+        require(current["balance"] == expected_balance,
+                "final-only balance differs from source truth plus journal replay: " + number)
 
     # A final read and a final direct snapshot can agree with one another while
     # both are corrupt.  Anchor retained state in the direct snapshot captured
