@@ -74,41 +74,184 @@ class AssemblyCollector:
 
 
 class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
-    def test_public_workload_passes_full_schema_before_semantic_validation(self):
-        """Drive the real public plan through assembly and the real v5 schema gate."""
+    def test_public_workload_assembly_passes_real_schema_and_semantic_validator(self):
+        """Drive the public plan through execute and its real validator process."""
         schema = json.loads((ROOT / "tb4_artifacts/candidate_evidence.schema.json").read_text())
         properties = schema["properties"]
         http_schema = schema["$defs"]["http"]
-        order = []
-        intervals = [
-            {"intervalId": "backfill-1", "kind": "backfill",
-             "startedMs": 100, "completedMs": 200},
-            {"intervalId": "cutover-1", "kind": "cutover",
-             "startedMs": 300, "completedMs": 400},
-        ]
+        journal_schema = properties["operation_journal"]["items"]
+        journals = []
+        states = {}
+        interval_times = {"live_backfill": 120, "cutover": 320}
 
-        def latency_samples(collector, phase, origin, accounts, national_id):
+        def trace(collector, method, route, phase, at_ms, status, account=None,
+                  amount=None, operation_id=None, idempotency_key=None, body=None,
+                  origin="candidate", container_id="old-app"):
+            collector.sequence += 1
+            trace_id = "assembly-trace-%04d" % collector.sequence
+            row = schema_specimen(http_schema, schema, trace_id)
+            row.update({
+                "trace_id": trace_id, "comparison_id": None, "origin": origin,
+                "phase": phase, "method": method, "route_template": route,
+                "started_ms": at_ms, "completed_ms": at_ms + 1,
+                "status": status, "body": body, "transport_error": None,
+                "expected_domain_error": status >= 400,
+                "request_account_number": account, "request_amount": amount,
+                "request_operation_id": operation_id,
+                "request_idempotency_key": idempotency_key,
+                "container_id": container_id,
+            })
+            collector.traces.append(row)
+            return row
+
+        def journal(row, kind, result, amount):
+            item = schema_specimen(journal_schema, schema, row["trace_id"])
+            item.update({
+                "operation_id": row["request_operation_id"],
+                "idempotency_key": row["request_idempotency_key"],
+                "account_number": row["request_account_number"],
+                "kind": kind, "amount": amount, "result": result,
+                "acknowledged": True, "request_trace_id": row["trace_id"],
+                "started_ms": row["started_ms"],
+                "completed_ms": row["completed_ms"],
+                "linearization_index": len(journals) + 1,
+            })
+            journals.append(item)
+
+        def seed(_collector, number, _identity, balance):
+            states[number] = {"accountNumber": number,
+                              "fullName": "Holder " + number,
+                              "balance": balance, "score": "B",
+                              "appliedOperationIds": []}
+
+        def financial(collector, operation, phase, accounts):
+            kind = operation["kind"]
+            if kind == "read":
+                number = accounts[operation["account"]]
+                trace(collector, "GET", runner.ROUTES["read"][1], phase,
+                      interval_times[phase] + 40, 200, number,
+                      body={key: states[number][key]
+                            for key in ("accountNumber", "fullName", "balance", "score")})
+                return
+            number = accounts.get(operation["account"], operation["account"])
+            amount = operation["amount"]
+            operation_id = operation["operation_id"]
+            idem = operation.get("idempotency_key", operation_id)
+            result, status = "applied", 204
+            if operation_id == "fund-04":
+                result = "duplicate_ignored"
+            elif number not in states:
+                result, status = "account_not_found", 404
+            elif kind == "withdraw" and states[number]["balance"] < amount:
+                result, status = "insufficient_funds", 409
+            elif kind == "deposit":
+                states[number]["balance"] += amount
+                states[number]["appliedOperationIds"].append(operation_id)
+            else:
+                states[number]["balance"] -= amount
+                states[number]["appliedOperationIds"].append(operation_id)
+            at_ms = interval_times[phase] + 5 + len(journals) * 3
+            row = trace(collector, "POST", runner.ROUTES[kind][1], phase, at_ms,
+                        status, number, amount, operation_id, idem)
+            journal(row, kind, result, amount)
+
+        def wait_interval(collector, kind, _account=None):
+            phase = "live_backfill" if kind == "backfill" else "cutover"
+            at_ms = 180 if kind == "backfill" else 390
+            for number in states:
+                body = {key: states[number][key]
+                        for key in ("accountNumber", "fullName", "balance", "score")}
+                trace(collector, "GET", runner.ROUTES["read"][1], phase,
+                      at_ms, 200, number, body=body)
+                at_ms += 2
+            return {"intervals": [{"intervalId": "backfill-1", "kind": "backfill",
+                                    "startedMs": 100, "completedMs": 200},
+                                   {"intervalId": "cutover-1", "kind": "cutover",
+                                    "startedMs": 300, "completedMs": 400}]}
+
+        def latency_samples(collector, phase, origin, _accounts, _national_id):
             result = {}
             for method, route in runner.ROUTES.values():
                 ids = []
                 for index in range(20):
-                    collector.sequence += 1
-                    trace_id = "assembly-trace-%04d" % collector.sequence
-                    trace = schema_specimen(http_schema, schema, trace_id)
-                    trace.update({"trace_id": trace_id, "comparison_id": None,
-                                  "origin": origin, "phase": phase, "method": method,
-                                  "route_template": route, "started_ms": index * 2,
-                                  "completed_ms": index * 2 + 1, "status": 404,
-                                  "body": None, "transport_error": None,
-                                  "expected_domain_error": True,
-                                  "request_account_number": None,
-                                  "request_amount": None,
-                                  "request_operation_id": None,
-                                  "request_idempotency_key": None})
-                    collector.traces.append(trace)
-                    ids.append(trace_id)
+                    at_ms = 10 + index * 3
+                    if origin == "source":
+                        public = trace(collector, method, route, phase, at_ms,
+                                       404, origin="candidate")
+                        comparison = "latency-comparison-" + public["trace_id"]
+                        public["comparison_id"] = comparison
+                        row = trace(collector, method, route, phase, at_ms + 2,
+                                    404, origin="source")
+                        row["comparison_id"] = comparison
+                    else:
+                        row = trace(collector, method, route, phase, at_ms,
+                                    404, origin=origin)
+                    ids.append(row["trace_id"])
                 result[(method, route)] = ids
             return result
+
+        def replacement(collector, accounts, operation_id):
+            numbers = list(accounts.values())
+            restart = []
+            for index, number in enumerate(numbers[:3]):
+                body = {key: states[number][key]
+                        for key in ("accountNumber", "fullName", "balance", "score")}
+                restart.append(trace(collector, "GET", runner.ROUTES["read"][1],
+                                     "target_only_restart", 530 + index * 2, 200,
+                                     number, body=body, container_id="new-app")["trace_id"])
+            number = numbers[0]
+            post = trace(collector, "POST", runner.ROUTES["deposit"][1],
+                         "target_only_restart", 540, 204, number, 1,
+                         operation_id, operation_id, container_id="new-app")
+            states[number]["balance"] += 1
+            states[number]["appliedOperationIds"].append(operation_id)
+            journal(post, "deposit", "applied", 1)
+            restart.append(post["trace_id"])
+            body = {key: states[number][key]
+                    for key in ("accountNumber", "fullName", "balance", "score")}
+            restart.append(trace(collector, "GET", runner.ROUTES["read"][1],
+                                 "target_only_restart", 550, 200, number,
+                                 body=body, container_id="new-app")["trace_id"])
+            mount = {"volume_id": "mongo-volume",
+                     "source": "/var/lib/docker/volumes/mongo-volume",
+                     "destination": "/data/db"}
+            return {
+                "old_container_id": "old-app", "new_container_id": "new-app",
+                "image_digest": "sha256:assembly",
+                "container_events": [
+                    {"event": "destroy", "container_id": "old-app", "at_ms": 510,
+                     "image_digest": "sha256:assembly"},
+                    {"event": "create", "container_id": "new-app", "at_ms": 520,
+                     "image_digest": "sha256:assembly"}],
+                "target_mount_before": mount, "target_mount_after": dict(mount),
+                "postgresql_network_inspect": {
+                    "network_id": "target-network", "network": "target-network",
+                    "application_container_id": "new-app",
+                    "postgresql_container_id": "postgres-app",
+                    "attached_container_ids": ["new-app"],
+                    "attached": False, "source_network_denied": True,
+                    "inspect_command": "docker network inspect target-network"},
+                "effective_configuration": {
+                    "storage": "mongodb", "postgresql_enabled": False,
+                    "active_profiles": ["target-only"],
+                    "selected_storage_bean": "mongoBankAccountStorage"},
+                "connection_observer": {
+                    "complete": True, "continuous": True,
+                    "application_container_id": "new-app",
+                    "source_container_id": "postgres-app",
+                    "started_ms": 500, "completed_ms": 560,
+                    "socket_sample_count": 2, "postgresql_session_sample_count": 2,
+                    "postgres_established_socket_count": 0,
+                    "replacement_postgresql_session_count": 0,
+                    "postgres_log_line_count": 0,
+                    "observed_network_ids": ["target-network"],
+                    "source_network_ids": ["source-network"],
+                    "proc_net_sha256": "a" * 64,
+                    "pg_stat_activity_sha256": "b" * 64,
+                    "application_log_sha256": "c" * 64,
+                    "connection_observations_lack_captured_content_digests": False},
+                "connection_attempt_log": [], "restart_trace_ids": restart,
+            }
 
         def inspect(reference):
             if reference == "banking-app":
@@ -118,66 +261,38 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
                                      "Source": "/var/lib/docker/volumes/mongo-volume"}]}
             raise AssertionError("unexpected inspection: " + reference)
 
-        original_schema_validation = runner.assert_schema_complete
+        def mongo_accounts():
+            return [dict(row, appliedOperationIds=list(row["appliedOperationIds"]))
+                    for row in states.values()]
 
-        def schema_validation(evidence, loaded_schema):
-            result = original_schema_validation(evidence, loaded_schema)
-            order.append("schema")
-            return result
-
-        def semantic_validator(command, **kwargs):
-            self.assertIn("validate_account_lifecycle_evidence.py", " ".join(command))
-            self.assertEqual(["schema"], order)
-            order.append("semantic")
-            return types.SimpleNamespace(returncode=0)
-
-        deployment = schema_specimen(properties["deployment_evidence"], schema, "deployment")
-        journal = schema_specimen(properties["operation_journal"], schema, "journal")
-        snapshot_node = properties["mongo_snapshots"]
-        if "$ref" in snapshot_node.get("items", {}):
-            resolved_snapshot = schema_specimen(snapshot_node["items"], schema, "snapshot")
-            snapshot_accounts = resolved_snapshot.get("accounts", [])
-        else:
-            snapshot_accounts = schema_specimen(
-                snapshot_node["items"]["properties"]["accounts"], schema, "accounts")
-
+        timestamps = iter((1, 500, 600))
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "evidence.json"
             args = types.SimpleNamespace(
                 workload=str(ROOT / "tb4_artifacts/public_workloads.json"),
                 output=str(output), base_url="http://candidate")
             with mock.patch.object(runner, "Collector", AssemblyCollector), \
-                    mock.patch.object(runner, "now_ms", return_value=500), \
+                    mock.patch.object(runner, "now_ms", side_effect=lambda: next(timestamps)), \
                     mock.patch.object(runner, "docker_inspect", side_effect=inspect), \
-                    mock.patch.object(runner, "open_seed_account"), \
+                    mock.patch.object(runner, "open_seed_account", side_effect=seed), \
                     mock.patch.object(runner, "lifecycle_observation"), \
-                    mock.patch.object(runner, "perform_financial"), \
-                    mock.patch.object(runner, "wait_interval",
-                                      return_value={"intervals": intervals}), \
+                    mock.patch.object(runner, "perform_financial", side_effect=financial), \
+                    mock.patch.object(runner, "wait_interval", side_effect=wait_interval), \
                     mock.patch.object(runner, "latency_samples", side_effect=latency_samples), \
-                    mock.patch.object(runner, "replace_application", return_value=deployment), \
-                    mock.patch.object(runner, "normalize_journal", return_value=journal), \
-                    mock.patch.object(runner, "direct_mongo_accounts",
-                                      return_value=snapshot_accounts), \
-                    mock.patch.object(runner, "assert_latency_posts_journaled"), \
-                    mock.patch.object(runner, "assert_schema_complete",
-                                      side_effect=schema_validation), \
-                    mock.patch.object(runner.subprocess, "run",
-                                      side_effect=semantic_validator):
+                    mock.patch.object(runner, "replace_application", side_effect=replacement), \
+                    mock.patch.object(runner, "normalize_journal", return_value=journals), \
+                    mock.patch.object(runner, "direct_mongo_accounts", side_effect=mongo_accounts):
                 runner.execute(args)
 
             evidence = json.loads(output.read_text())
             phases = {row["phase"] for row in evidence["http_trace"]}
-            self.assertEqual(["schema", "semantic"], order)
             self.assertIn("target_only", phases)
             self.assertNotIn("post_cutover", phases)
-            self.assertGreaterEqual(len(evidence["mongo_snapshots"]), 2)
             self.assertEqual(
                 {"pre_replacement", "final_reconciliation"},
                 {row["purpose"] for row in evidence["mongo_snapshots"]})
             self.assertTrue(all(row["query"] == "direct_mongodb_query"
                                 for row in evidence["mongo_snapshots"]))
-
 
 if __name__ == "__main__":
     unittest.main()

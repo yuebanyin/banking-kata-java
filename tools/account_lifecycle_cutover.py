@@ -908,6 +908,13 @@ def execute(args):
     volume_before = mongo_mount_before.get("Name") or mongo_mount_before.get(
         "Source", "mongodb")
     pre_replacement_accounts = direct_mongo_accounts()
+    # Bind the observation timestamp to the query itself, before replacement starts.
+    pre_replacement_snapshot = {
+        "snapshot_id": run_id + "-pre-replacement", "purpose": "pre_replacement",
+        "captured_ms": now_ms(), "engine": "mongodb",
+        "query": "direct_mongodb_query", "volume_id": volume_before,
+        "accounts": pre_replacement_accounts,
+    }
 
     deployment = replace_application(c, accounts, run_id + "-restart-write")
     # The target-only controller exposes the durable Mongo journal directly.
@@ -919,16 +926,14 @@ def execute(args):
              "source": mongo_mount.get("Source", "mongodb"),
              "destination": mongo_mount.get("Destination", "/data/db")}
     mount_id = mongo_mount.get("Name") or mongo_mount.get("Source", "mongodb")
-    snapshots = [
-        {"snapshot_id": run_id + "-pre-replacement", "purpose": "pre_replacement",
-         "captured_ms": now_ms(), "engine": "mongodb",
-         "query": "direct_mongodb_query", "volume_id": volume_before,
-         "accounts": pre_replacement_accounts},
-        {"snapshot_id": run_id + "-final", "purpose": "final_reconciliation",
-         "captured_ms": now_ms(), "engine": "mongodb",
-         "query": "direct_mongodb_query", "volume_id": mount_id,
-         "accounts": direct_mongo_accounts()},
-    ]
+    final_accounts = direct_mongo_accounts()
+    final_snapshot = {
+        "snapshot_id": run_id + "-final", "purpose": "final_reconciliation",
+        "captured_ms": now_ms(), "engine": "mongodb",
+        "query": "direct_mongodb_query", "volume_id": mount_id,
+        "accounts": final_accounts,
+    }
+    snapshots = [pre_replacement_snapshot, final_snapshot]
     intervals = statuses["cutover"].get("intervals", [])
     # cutover status includes the previously completed backfill interval.
     unique = {row["intervalId"]: {"interval_id": row["intervalId"], "kind": row["kind"],

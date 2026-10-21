@@ -265,5 +265,67 @@ class DeploymentObservationTest(unittest.TestCase):
                 runner.scoped_compose_container("postgres", "banking-project")
 
 
+class MongoSnapshotReconciliationTest(unittest.TestCase):
+    def setUp(self):
+        path = ROOT / "tools" / "validate_account_lifecycle_evidence.py"
+        spec = importlib.util.spec_from_file_location("cutover_validator", path)
+        self.validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.validator)
+
+    def evidence(self):
+        account = {"accountNumber": "ACC-1", "fullName": "Ada Holder",
+                   "balance": 50, "score": "B", "appliedOperationIds": ["deposit-1"]}
+        return {
+            "mongo_snapshots": [
+                {"purpose": "pre_replacement", "captured_ms": 200,
+                 "volume_id": "mongo-volume", "accounts": [dict(account)]},
+                {"purpose": "final_reconciliation", "captured_ms": 300,
+                 "volume_id": "mongo-volume", "accounts": [dict(account)]},
+            ],
+            "deployment_evidence": {
+                "container_events": [{"event": "destroy", "at_ms": 220},
+                                     {"event": "create", "at_ms": 230}],
+                "target_mount_before": {"volume_id": "mongo-volume"},
+                "target_mount_after": {"volume_id": "mongo-volume"},
+                "restart_trace_ids": ["read-1"],
+            },
+        }
+
+    def rows(self):
+        traces = [{"trace_id": "read-1", "origin": "candidate", "method": "GET",
+                   "status": 200, "completed_ms": 190, "request_account_number": "ACC-1",
+                   "body": {"accountNumber": "ACC-1", "fullName": "Ada Holder",
+                            "balance": 42, "score": "B"}}]
+        journals = [{"operation_id": "deposit-1", "account_number": "ACC-1",
+                     "kind": "deposit", "amount": 8, "acknowledged": True,
+                     "result": "applied", "completed_ms": 195}]
+        return journals, traces
+
+    def test_reconciles_pre_and_final_identity_state_operations_and_mount(self):
+        journals, traces = self.rows()
+        self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+    def test_rejects_corrupt_pre_replacement_state(self):
+        evidence = self.evidence()
+        evidence["mongo_snapshots"][0]["accounts"][0]["fullName"] = "Forged"
+        journals, traces = self.rows()
+        with self.assertRaisesRegex(ValueError, "fullName"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_rejects_snapshot_volume_not_bound_to_deployment_mount(self):
+        evidence = self.evidence()
+        evidence["mongo_snapshots"][1]["volume_id"] = "unrelated-volume"
+        journals, traces = self.rows()
+        with self.assertRaisesRegex(ValueError, "observed MongoDB mount"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_rejects_pre_replacement_timestamp_after_destroy(self):
+        evidence = self.evidence()
+        evidence["mongo_snapshots"][0]["captured_ms"] = 225
+        journals, traces = self.rows()
+        with self.assertRaisesRegex(ValueError, "after container destruction"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+
 if __name__ == "__main__":
     unittest.main()

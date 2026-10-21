@@ -170,9 +170,9 @@ def validate_workload_binding(evidence, workload):
             expected_account = declaration["account_number"]
         elif isinstance(declaration.get("account"), str):
             alias = declaration["account"]
-            require(alias in alias_accounts,
-                    "workload operation references unknown account alias: " + alias)
-            expected_account = alias_accounts[alias]
+            # The runner treats aliases absent from initial_balances as literal
+            # account identifiers (notably missing-account edge cases).
+            expected_account = alias_accounts.get(alias, alias)
         if expected_account is not None:
             require(row.get("account_number") == expected_account,
                     "workload account mismatch for " + operation_id)
@@ -266,6 +266,92 @@ def validate_observation_provenance(evidence):
         require(observer["started_ms"] <= attempt.get("at_ms", -1) <= observer["completed_ms"],
                 "source attempt lies outside observer window")
 
+def validate_mongo_snapshots(evidence, journals, traces):
+    """Reconcile both sides of replacement with public reads and durable writes."""
+    snapshots = evidence["mongo_snapshots"]
+    pre = [row for row in snapshots if row["purpose"] == "pre_replacement"]
+    final = [row for row in snapshots if row["purpose"] == "final_reconciliation"]
+    require(len(pre) == 1, "one pre-replacement MongoDB snapshot required")
+    require(len(final) == 1, "one final MongoDB snapshot required")
+    require(len(snapshots) == 2,
+            "only the required pre-replacement and final MongoDB snapshots are accepted")
+
+    deployment = evidence["deployment_evidence"]
+    events = {row["event"]: row for row in deployment["container_events"]}
+    require(pre[0]["captured_ms"] <= events["destroy"]["at_ms"],
+            "pre-replacement snapshot was captured after container destruction")
+    require(final[0]["captured_ms"] >= events["create"]["at_ms"],
+            "final snapshot predates replacement creation")
+    require(pre[0]["volume_id"] == deployment["target_mount_before"]["volume_id"],
+            "pre-replacement snapshot is not bound to the observed MongoDB mount")
+    require(final[0]["volume_id"] == deployment["target_mount_after"]["volume_id"],
+            "final snapshot is not bound to the observed MongoDB mount")
+
+    restart = set(deployment.get("restart_trace_ids", []))
+    restart_rows = [trace for trace in traces if trace["trace_id"] in restart]
+    if restart_rows:
+        require(final[0]["captured_ms"] >= max(row["completed_ms"] for row in restart_rows),
+                "final snapshot predates a replacement probe")
+
+    observed = {}
+    for snapshot in snapshots:
+        cutoff = snapshot["captured_ms"]
+        accounts = snapshot["accounts"]
+        by_number = {row["accountNumber"]: row for row in accounts}
+        require(len(by_number) == len(accounts), "duplicate MongoDB account")
+        successful_gets = [row for row in traces
+                           if row["origin"] == "candidate" and row["method"] == "GET"
+                           and row["status"] == 200 and row["completed_ms"] <= cutoff]
+        latest_get = {}
+        for row in successful_gets:
+            number = row["request_account_number"]
+            if number is not None and (number not in latest_get or
+                                       row["completed_ms"] > latest_get[number]["completed_ms"]):
+                latest_get[number] = row
+        require(set(latest_get) <= set(by_number),
+                "successful account GET is absent from MongoDB snapshot")
+
+        applicable = [row for row in journals if row["acknowledged"]
+                      and row["result"] == "applied" and row["completed_ms"] <= cutoff]
+        for row in accounts:
+            number = row["accountNumber"]
+            require(number in latest_get,
+                    "MongoDB account has no successful GET state observation: " + number)
+            read = latest_get[number]
+            body = read["body"]
+            require(isinstance(body, dict) and body.get("accountNumber") == number,
+                    "GET identity does not match MongoDB account: " + number)
+            expected_balance = body.get("balance")
+            require(isinstance(expected_balance, int),
+                    "GET balance is not an integer for MongoDB account: " + number)
+            for operation in applicable:
+                if (operation["account_number"] == number and
+                        operation["completed_ms"] > read["completed_ms"]):
+                    if operation["kind"] == "deposit":
+                        expected_balance += operation["amount"]
+                    elif operation["kind"] == "withdraw":
+                        expected_balance -= operation["amount"]
+            require(row["fullName"] == body.get("fullName"),
+                    "MongoDB fullName differs from latest public state: " + number)
+            require(row["balance"] == expected_balance,
+                    "MongoDB balance differs from replayed public state: " + number)
+            require(row["score"] == body.get("score"),
+                    "MongoDB score differs from latest public state: " + number)
+            ids = row["appliedOperationIds"]
+            require(len(ids) == len(set(ids)), "duplicate applied operation on account")
+            expected_ids = [operation["operation_id"] for operation in applicable
+                            if operation["account_number"] == number]
+            require(ids == expected_ids,
+                    "MongoDB operations are missing, orphaned, or out of order")
+        for operation in applicable:
+            require(operation["account_number"] in by_number,
+                    "applied operation account missing")
+        observed[snapshot["purpose"]] = by_number
+
+    require(set(observed["pre_replacement"]) <= set(observed["final_reconciliation"]),
+            "replacement lost a pre-replacement MongoDB account")
+
+
 def validate(evidence):
     validate_observation_provenance(evidence)
     require(evidence["schema_version"] == 5, "schema version mismatch")
@@ -344,27 +430,7 @@ def validate(evidence):
         require(writes, "interval has no acknowledged successful write: " + interval["kind"])
     require(kinds == {"backfill", "cutover"}, "backfill/cutover intervals required")
 
-    final = [s for s in evidence["mongo_snapshots"] if s["purpose"] == "final_reconciliation"]
-    require(len(final) == 1, "one final MongoDB snapshot required")
-    accounts = final[0]["accounts"]
-    account_by_number = {a["accountNumber"]: a for a in accounts}
-    require(len(account_by_number) == len(accounts), "duplicate MongoDB account")
-    known_applied = {r["operation_id"] for r in journals if r["result"] == "applied" and r["acknowledged"]}
-    snapshot_ops = []
-    for account in accounts:
-        ids = account["appliedOperationIds"]
-        require(len(ids) == len(set(ids)), "duplicate applied operation on account")
-        snapshot_ops.extend(ids)
-        require(set(ids) <= known_applied, "orphan operation in MongoDB snapshot")
-        expected_ids = [row["operation_id"] for row in journals
-                        if row["account_number"] == account["accountNumber"]
-                        and row["result"] == "applied" and row["acknowledged"]]
-        require(ids == expected_ids, "MongoDB operations are missing, orphaned, or out of order")
-    for row in journals:
-        if row["result"] == "applied" and row["acknowledged"]:
-            require(row["account_number"] in account_by_number, "applied operation account missing")
-            require(row["operation_id"] in account_by_number[row["account_number"]]["appliedOperationIds"],
-                    "applied operation absent from MongoDB")
+    validate_mongo_snapshots(evidence, journals, traces)
 
     require(len(evidence["latency_partitions"]) == 4, "exactly four latency partitions required")
     require({(p["method"], p["route_template"]) for p in evidence["latency_partitions"]} == ROUTES,
