@@ -6,6 +6,7 @@ import com.optivem.kata.banking.core.ports.driven.AccountOperationContext;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationJournal;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationRecovery;
 import com.optivem.kata.banking.core.ports.driven.AccountProjectionWriter;
+import com.optivem.kata.banking.core.ports.driven.AccountStorageRoute;
 import com.optivem.kata.banking.core.ports.driver.accounts.depositfunds.DepositFundsRequest;
 import com.optivem.kata.banking.core.ports.driver.accounts.openaccount.OpenAccountRequest;
 import com.optivem.kata.banking.core.ports.driver.accounts.openaccount.OpenAccountResponse;
@@ -19,6 +20,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
+import java.util.Date;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -36,11 +41,41 @@ public class BankAccountController extends BaseController {
     private AccountOperationRecovery operationRecovery;
 
     @PostMapping("/bank-accounts")
-    public ResponseEntity<OpenAccountResponse> openAccount(
+    public ResponseEntity<?> openAccount(
             @RequestBody OpenAccountRequest request,
             @RequestHeader(value = "X-Operation-Id", required = false) String operationId,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
-            @RequestHeader(value = "X-Trace-Id", required = false) String traceId) {
+            @RequestHeader(value = "X-Trace-Id", required = false) String traceId,
+            @RequestHeader(value = "X-Evidence-Time", required = false) String evidenceTime) {
+        try {
+            return openAccountSuccess(request, operationId, idempotencyKey, traceId);
+        } catch (ValidationException error) {
+            if (!ValidationMessages.NATIONAL_IDENTITY_NUMBER_NONEXISTENT.equals(error.getMessage())
+                    && !ValidationMessages.NATIONAL_IDENTITY_NUMBER_BLACKLISTED.equals(error.getMessage())) {
+                throw error;
+            }
+            var body = new LinkedHashMap<String, Object>();
+            body.put("timestamp", Date.from(evidenceTime == null
+                    ? Instant.now() : Instant.parse(evidenceTime)));
+            body.put("status", 500);
+            body.put("error", "Internal Server Error");
+            body.put("path", "/bank-accounts");
+            return new ResponseEntity<>(body, HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    private ResponseEntity<OpenAccountResponse> openAccountSuccess(
+            OpenAccountRequest request, String operationId, String idempotencyKey, String traceId) {
+        if (AccountStorageRoute.isSourceOnly()) {
+            if (operationId == null) {
+                return new ResponseEntity<>(pipeline.send(request), HttpStatus.CREATED);
+            }
+            String key = valueOr(idempotencyKey, operationId);
+            String trace = valueOr(traceId, operationId);
+            var operation = new AccountOperationContext.Operation(operationId, key, trace, "create");
+            OpenAccountResponse response = AccountOperationContext.call(operation, () -> pipeline.send(request));
+            return new ResponseEntity<>(response, HttpStatus.CREATED);
+        }
         if (operationId == null || journal == null) {
             return new ResponseEntity<>(pipeline.send(request), HttpStatus.CREATED);
         }
@@ -60,16 +95,10 @@ public class BankAccountController extends BaseController {
             }
         }
         var operation = new AccountOperationContext.Operation(operationId, key, trace, "create");
-        try {
-            OpenAccountResponse response = AccountOperationContext.call(operation, () -> pipeline.send(request));
-            journal.complete(operationId, response.getAccountNumber(), "applied", true,
-                    System.currentTimeMillis());
-            return new ResponseEntity<>(response, HttpStatus.CREATED);
-        } catch (RuntimeException error) {
-            // Failed lifecycle requests deliberately have no operation header in evidence. If a caller
-            // supplied one, leave a non-acknowledged row rather than claiming a successful mutation.
-            throw error;
-        }
+        OpenAccountResponse response = AccountOperationContext.call(operation, () -> pipeline.send(request));
+        journal.complete(operationId, response.getAccountNumber(), "applied", true,
+                System.currentTimeMillis());
+        return new ResponseEntity<>(response, HttpStatus.CREATED);
     }
 
     @GetMapping("/bank-accounts/{accountNumber}")
@@ -111,7 +140,7 @@ public class BankAccountController extends BaseController {
         String key = valueOr(headerKey, operationId);
         String trace = valueOr(traceId, operationId);
         long started = System.currentTimeMillis();
-        AccountOperationJournal.Entry reserved = journal == null ? null
+        AccountOperationJournal.Entry reserved = AccountStorageRoute.isSourceOnly() || journal == null ? null
                 : journal.reserve(operationId, key, trace, kind, accountNumber, body.getAmount(), started);
         if (reserved != null && ("duplicate_ignored".equals(reserved.result())
                 || "applied".equals(reserved.result()))) {

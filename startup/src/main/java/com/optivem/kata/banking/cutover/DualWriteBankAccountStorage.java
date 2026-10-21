@@ -3,6 +3,7 @@ package com.optivem.kata.banking.cutover;
 import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.JpaBankAccountStorage;
 import com.optivem.kata.banking.adapter.driven.persistence.mongo.MongoBankAccountStorage;
+import com.optivem.kata.banking.core.ports.driven.AccountStorageRoute;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationContext;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationJournal;
 import com.optivem.kata.banking.core.ports.driven.AccountOperationRecovery;
@@ -38,6 +39,7 @@ public class DualWriteBankAccountStorage implements BankAccountStorage, AccountO
 
     @Override
     public Optional<BankAccountDto> find(String accountNumber) {
+        if (AccountStorageRoute.isSourceOnly()) return source.find(accountNumber);
         return state.mongoReads() ? target.find(accountNumber) : source.find(accountNumber);
     }
 
@@ -48,6 +50,10 @@ public class DualWriteBankAccountStorage implements BankAccountStorage, AccountO
 
     @Override
     public void add(BankAccountDto account) {
+        if (AccountStorageRoute.isSourceOnly()) {
+            source.add(account);
+            return;
+        }
         synchronized (lock(account.getAccountNumber())) {
             source.add(account);
             // The source row and its last_operation_id marker are committed together by JPA.
@@ -58,6 +64,10 @@ public class DualWriteBankAccountStorage implements BankAccountStorage, AccountO
 
     @Override
     public void update(BankAccountDto account) {
+        if (AccountStorageRoute.isSourceOnly()) {
+            source.update(account);
+            return;
+        }
         synchronized (lock(account.getAccountNumber())) {
             source.update(account);
             target.upsert(account);

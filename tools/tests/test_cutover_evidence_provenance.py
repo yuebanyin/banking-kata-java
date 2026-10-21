@@ -43,7 +43,9 @@ class CollectorSeparationTest(unittest.TestCase):
             if request.full_url.endswith("/internal/evidence/source-observation"):
                 payload = json.loads(request.data)
                 self.assertEqual("POST", payload["method"])
-                self.assertEqual(204, payload["candidateStatus"])
+                self.assertNotIn("candidateStatus", payload)
+                self.assertNotIn("candidateBody", payload)
+                self.assertEqual({"amount": 2, "operationId": "op"}, payload["requestBody"])
                 return Response(200, b'{"status":204,"body":null}')
             return Response(204)
 
@@ -59,7 +61,8 @@ class CollectorSeparationTest(unittest.TestCase):
         self.assertEqual(1, urls.count("http://candidate/internal/evidence/source-observation"))
         self.assertEqual("candidate", candidate["origin"])
         self.assertEqual("source", source["origin"])
-        self.assertGreaterEqual(source["started_ms"], candidate["completed_ms"])
+        self.assertEqual((candidate["started_ms"], candidate["completed_ms"]),
+                         (source["started_ms"], source["completed_ms"]))
 
     def test_source_baseline_uses_one_public_request_and_one_jpa_receipt(self):
         urls = []
@@ -69,14 +72,56 @@ class CollectorSeparationTest(unittest.TestCase):
                 return Response(200, b'{"status":204,"body":null}')
             return Response(204)
         collector = runner.Collector("http://candidate", "run")
-        with mock.patch.object(runner.urllib.request, "urlopen", side_effect=open_request):
+        # The public route is deliberately 40 ms while the control receipt is 1 ms.
+        # Source baseline evidence must retain the public-route interval.
+        with mock.patch.object(runner.urllib.request, "urlopen", side_effect=open_request), \
+                mock.patch.object(runner, "now_ms", side_effect=[100, 140, 141, 142]):
             source = collector.request(
                 "POST", "/bank-accounts/A/deposits", origin="source",
                 route_template=runner.ROUTES["deposit"][1], account="A", amount=1,
                 operation_id="op", idempotency_key="op", body={"amount": 1})
         self.assertEqual("source", source["origin"])
+        self.assertEqual((100, 140), (source["started_ms"], source["completed_ms"]))
         self.assertEqual(1, urls.count("http://candidate/bank-accounts/A/deposits"))
         self.assertEqual(1, urls.count("http://candidate/internal/evidence/source-observation"))
+
+    def test_forged_candidate_field_is_not_sent_to_source_receipt(self):
+        payloads = []
+
+        def open_request(request, timeout):
+            if request.full_url.endswith("/internal/evidence/source-observation"):
+                payloads.append(json.loads(request.data))
+                return Response(200, b'{"status":200,"body":{"accountNumber":"A",'
+                                     b'"fullName":"Real Name","balance":10,"score":"A"}}')
+            return Response(200, b'{"accountNumber":"A","fullName":"Real Name",'
+                                 b'"balance":10,"score":"FORGED"}')
+
+        collector = runner.Collector("http://candidate", "run")
+        with mock.patch.object(runner.urllib.request, "urlopen", side_effect=open_request):
+            candidate, source = runner.paired(
+                collector, "GET", "/bank-accounts/A", phase="source_baseline",
+                route_template=runner.ROUTES["read"][1], account="A")
+        self.assertEqual("FORGED", candidate["body"]["score"])
+        self.assertEqual("A", source["body"]["score"])
+        self.assertNotIn("candidateStatus", payloads[0])
+        self.assertNotIn("candidateBody", payloads[0])
+
+
+    def test_source_baseline_public_probe_requests_postgresql_only_storage(self):
+        public_headers = []
+
+        def open_request(request, timeout):
+            if request.full_url.endswith("/internal/evidence/source-observation"):
+                return Response(200, b'{"status":404,"body":null}')
+            public_headers.append({key.lower(): value for key, value in request.header_items()})
+            return Response(404)
+
+        collector = runner.Collector("http://candidate", "run")
+        with mock.patch.object(runner.urllib.request, "urlopen", side_effect=open_request):
+            collector.request("GET", "/bank-accounts/missing", origin="source",
+                              route_template=runner.ROUTES["read"][1], account="missing")
+        self.assertEqual("true", public_headers[0]["x-tb4-source-only"])
+
 
 
 class DeploymentChronologyTest(unittest.TestCase):

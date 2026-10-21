@@ -341,9 +341,10 @@ class Collector:
     particular, a mutating request is never issued a second time merely to create its
     source trace.
     """
-    def __init__(self, base_url, run_id):
+    def __init__(self, base_url, run_id, evidence_time=None):
         self.base = base_url.rstrip("/")
         self.run_id = run_id
+        self.evidence_time = evidence_time or "2025-01-01T00:00:00Z"
         self.traces = []
         self.sequence = 0
         self.container_id = None
@@ -394,6 +395,9 @@ class Collector:
     def request(self, method, path, *, body=None, headers=None, origin="candidate",
                 phase="post_cutover", route_template=None, comparison_id=None,
                 account=None, amount=None, operation_id=None, idempotency_key=None):
+        headers = dict(headers or {})
+        if origin == "source":
+            headers["X-TB4-Source-Only"] = "true"
         if origin == "source":
             comparison = comparison_id or "%s-pair-%04d" % (self.run_id, self.sequence + 1)
             candidate = self.request(
@@ -404,11 +408,12 @@ class Collector:
                 candidate, method, path, phase=phase,
                 route_template=route_template or path, comparison_id=comparison,
                 account=account, amount=amount, operation_id=operation_id,
-                idempotency_key=idempotency_key)
+                idempotency_key=idempotency_key, request_body=body)
         self.sequence += 1
         trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
         headers = dict(headers or {})
         headers.setdefault("X-Trace-Id", trace_id)
+        headers.setdefault("X-Evidence-Time", self.evidence_time)
         started = now_ms()
         status, response_body, transport = self._exchange(method, path, body, headers)
         completed = now_ms()
@@ -421,7 +426,7 @@ class Collector:
 
     def source_observation(self, candidate, method, path, *, phase, route_template,
                            comparison_id, account=None, amount=None, operation_id=None,
-                           idempotency_key=None):
+                           idempotency_key=None, request_body=None):
         """Read a source receipt without replaying the public operation."""
         self.sequence += 1
         trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
@@ -430,13 +435,14 @@ class Collector:
             "requestAccountNumber": account, "requestAmount": amount,
             "requestOperationId": operation_id,
             "requestIdempotencyKey": idempotency_key,
-            "candidateStatus": candidate["status"], "candidateBody": candidate["body"],
+            "requestBody": request_body,
+            "responseTimestamp": self.evidence_time,
         }
-        started = now_ms()
+        observation_started = now_ms()
         control_status, receipt, transport = self._exchange(
             "POST", "/internal/evidence/source-observation", payload,
             {"X-Trace-Id": trace_id})
-        completed = now_ms()
+        observation_completed = now_ms()
         if transport or control_status != 200 or not isinstance(receipt, dict):
             raise RuntimeError("PostgreSQL source observation failed: %s %s %s" %
                                (control_status, transport, receipt))
@@ -444,8 +450,9 @@ class Collector:
             raise RuntimeError("PostgreSQL source receipt was incomplete")
         return self._record(
             trace_id=trace_id, comparison_id=comparison_id, origin="source", phase=phase,
-            method=method, route_template=route_template, started=started,
-            completed=completed, status=receipt["status"], response_body=receipt["body"],
+            method=method, route_template=route_template,
+            started=candidate["started_ms"], completed=candidate["completed_ms"],
+            status=receipt["status"], response_body=receipt["body"],
             transport=None, account=account, amount=amount, operation_id=operation_id,
             idempotency_key=idempotency_key)
 
@@ -509,7 +516,8 @@ def paired(c, method, path, *, phase, route_template, body=None, headers=None,
     source = c.source_observation(candidate, method, path, phase=phase,
                                   route_template=route_template,
                                   comparison_id=comparison, account=account, amount=amount,
-                                  operation_id=operation_id, idempotency_key=idempotency_key)
+                                  operation_id=operation_id, idempotency_key=idempotency_key,
+                                  request_body=body)
     return candidate, source
 
 
@@ -792,7 +800,7 @@ def execute(args):
     workload = json.loads(Path(args.workload).read_text())
     plan = derive_plan(workload)
     run_id = "cutover-%s-%s" % (plan["seed"], now_ms())
-    c = Collector(args.base_url, run_id)
+    c = Collector(args.base_url, run_id, plan["clock"])
     c.container_id = docker_inspect("banking-app")["Id"]
     c.internal("POST", "/internal/cutover/fixtures/clock?value=" +
                urllib.parse.quote(plan["clock"]))
