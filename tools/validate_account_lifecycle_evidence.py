@@ -353,6 +353,51 @@ def validate_mongo_snapshots(evidence, journals, traces):
     require(set(before) <= set(after),
             "replacement lost a pre-replacement MongoDB account")
 
+    # A final-only document and a replacement GET can otherwise corroborate one
+    # another without proving that the account was ever created.  Attribute
+    # every such document to one externally acknowledged creation in the
+    # interval between the two direct snapshots.  Check both sides of the
+    # journal link here instead of relying on the final GET as provenance.
+    lower = pre[0]["captured_ms"]
+    upper = final[0]["captured_ms"]
+    final_only = set(after) - set(before)
+    for number in final_only:
+        creation_posts = [row for row in traces
+                          if row.get("origin") == "candidate"
+                          and row.get("method") == "POST"
+                          and row.get("route_template") == "/bank-accounts"
+                          and row.get("status") == 201
+                          and row.get("body") == {"accountNumber": number}
+                          and lower < row.get("started_ms", -1)
+                          and row.get("completed_ms", upper + 1) <= upper]
+        require(len(creation_posts) == 1,
+                "final-only account requires exactly one successful creation POST: " + number)
+        creation = creation_posts[0]
+
+        creation_journals = [row for row in journals
+                             if row.get("kind") == "create"
+                             and row.get("account_number") == number
+                             and row.get("acknowledged") is True
+                             and row.get("result") in ("applied", "duplicate_ignored")
+                             and lower < row.get("started_ms", -1)
+                             and row.get("completed_ms", upper + 1) <= upper]
+        require(len(creation_journals) == 1,
+                "final-only account requires exactly one acknowledged creation journal: " + number)
+        creation_journal = creation_journals[0]
+        require(creation_journal.get("request_trace_id") == creation.get("trace_id"),
+                "final-only creation POST/journal trace mismatch: " + number)
+        operation_id = creation_journal.get("operation_id")
+        idempotency_key = creation_journal.get("idempotency_key")
+        require(isinstance(operation_id, str) and operation_id and
+                creation.get("request_operation_id") == operation_id,
+                "final-only creation operation identity mismatch: " + number)
+        require(isinstance(idempotency_key, str) and idempotency_key and
+                creation.get("request_idempotency_key") == idempotency_key,
+                "final-only creation idempotency identity mismatch: " + number)
+        if creation_journal["result"] == "applied":
+            require(operation_id in after[number]["appliedOperationIds"],
+                    "final-only applied creation is absent from operation order: " + number)
+
     # A final read and a final direct snapshot can agree with one another while
     # both are corrupt.  Anchor retained state in the direct snapshot captured
     # before replacement, then advance it using only durable, applied journal
