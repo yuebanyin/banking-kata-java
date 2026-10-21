@@ -202,7 +202,72 @@ def validate_workload_binding(evidence, workload):
                     "workload HTTP idempotency key mismatch for " + operation_id)
 
 
+def validate_observation_provenance(evidence):
+    """Reject same-path pseudo-pairs and audit windows which miss replacement traffic."""
+    traces = evidence.get("http_trace", [])
+    pairs = {}
+    for trace in traces:
+        comparison = trace.get("comparison_id")
+        if comparison is not None:
+            pairs.setdefault(comparison, []).append(trace)
+    for comparison, rows in pairs.items():
+        source = [row for row in rows if row.get("origin") == "source"]
+        candidate = [row for row in rows if row.get("origin") == "candidate"]
+        require(len(source) == 1 and len(candidate) == 1,
+                "comparison must have exactly one source receipt and candidate request: " + comparison)
+        # The runner executes the candidate exactly once, then observes its committed
+        # source receipt through the direct JPA endpoint.  Concurrent/same-call labels
+        # cannot satisfy this ordering.
+        require(source[0]["started_ms"] >= candidate[0]["completed_ms"],
+                "source receipt predates candidate completion: " + comparison)
+        require(source[0]["trace_id"] != candidate[0]["trace_id"],
+                "source and candidate traces are not independent: " + comparison)
+
+    deployment = evidence.get("deployment_evidence", {})
+    events = {row.get("event"): row for row in deployment.get("container_events", [])}
+    require("destroy" in events and "create" in events,
+            "replacement requires Docker destroy and create events")
+    destroy = events["destroy"]
+    create = events["create"]
+    require(destroy.get("container_id") == deployment.get("old_container_id"),
+            "destroy event is not bound to old container")
+    require(create.get("container_id") == deployment.get("new_container_id"),
+            "create event is not bound to replacement container")
+    require(destroy.get("at_ms", 0) <= create.get("at_ms", -1),
+            "Docker replacement event chronology is invalid")
+
+    observer = deployment.get("connection_observer", {})
+    require(observer.get("continuous") is True,
+            "source-attempt observer is not continuous")
+    require(observer.get("socket_sample_count", 0) > 0 and
+            observer.get("postgresql_session_sample_count", 0) > 0,
+            "continuous observer has no socket/session samples")
+    require(observer.get("application_container_id") == deployment.get("new_container_id"),
+            "observer is not bound to replacement container")
+    require(observer.get("started_ms", 2**63 - 1) <= create.get("at_ms", -1),
+            "source audit started after replacement creation")
+
+    by_id = {trace.get("trace_id"): trace for trace in traces}
+    restart_ids = deployment.get("restart_trace_ids", [])
+    require(bool(restart_ids), "replacement has no restart probes")
+    restart = []
+    for trace_id in restart_ids:
+        require(trace_id in by_id, "replacement probe trace is missing: " + str(trace_id))
+        trace = by_id[trace_id]
+        require(trace.get("container_id") == deployment.get("new_container_id"),
+                "replacement probe belongs to another container: " + str(trace_id))
+        require(trace.get("started_ms", -1) >= create.get("at_ms", 2**63 - 1),
+                "replacement probe predates Docker create event: " + str(trace_id))
+        restart.append(trace)
+    last_probe_ms = max(trace.get("completed_ms", 2**63 - 1) for trace in restart)
+    require(observer.get("completed_ms", -1) >= last_probe_ms,
+            "source audit stopped before final replacement probe")
+    for attempt in deployment.get("connection_attempt_log", []):
+        require(observer["started_ms"] <= attempt.get("at_ms", -1) <= observer["completed_ms"],
+                "source attempt lies outside observer window")
+
 def validate(evidence):
+    validate_observation_provenance(evidence)
     require(evidence["schema_version"] == 5, "schema version mismatch")
     traces = evidence["http_trace"]
     by_id = {}

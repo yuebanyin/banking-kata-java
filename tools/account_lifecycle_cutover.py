@@ -13,6 +13,8 @@ import os
 import subprocess
 import sys
 import time
+import threading
+from datetime import datetime, timezone
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -152,7 +154,8 @@ def _postgres_established_sockets(proc_net):
 
 
 def assess_source_isolation(application, source, denied_network_id, proc_net,
-                            pg_sessions, logs, effective_configuration, captured_ms):
+                            pg_sessions, logs, effective_configuration, captured_ms,
+                            observer_started_ms=None, observer_completed_ms=None):
     """Derive the audit solely from scoped daemon/runtime observations."""
     app_networks = _network_ids(application)
     source_networks = _network_ids(source)
@@ -179,8 +182,8 @@ def assess_source_isolation(application, source, denied_network_id, proc_net,
     observer = {
         "kind": "scoped-docker-network-proc-socket-pg-stat-activity",
         "complete": complete,
-        "started_ms": captured_ms,
-        "completed_ms": now_ms(),
+        "started_ms": observer_started_ms if observer_started_ms is not None else captured_ms,
+        "completed_ms": observer_completed_ms if observer_completed_ms is not None else now_ms(),
         "application_container_id": application["Id"],
         "source_container_id": source["Id"],
         "observed_network_ids": sorted(app_networks),
@@ -195,7 +198,13 @@ def assess_source_isolation(application, source, denied_network_id, proc_net,
     return observer, attempts
 
 
-def collect_source_isolation(application_id, source_id, denied_network_id, effective_configuration):
+def _rfc3339(timestamp_ms):
+    return datetime.fromtimestamp(timestamp_ms / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def collect_source_isolation(application_id, source_id, denied_network_id, effective_configuration,
+                             observer_started_ms=None, proc_samples=None, session_samples=None,
+                             observer_completed_ms=None):
     captured_ms = now_ms()
     socket_result = capture(["docker", "exec", application_id, "sh", "-c",
                              "cat /proc/net/tcp /proc/net/tcp6"])
@@ -207,14 +216,100 @@ def collect_source_isolation(application_id, source_id, denied_network_id, effec
                               "from pg_stat_activity where backend_type='client backend'\""])
     if session_result.returncode:
         raise RuntimeError("could not observe PostgreSQL sessions: " + session_result.stderr.strip())
-    log_result = capture(["docker", "logs", "--since", "1970-01-01T00:00:00Z", application_id])
+    since = _rfc3339(observer_started_ms or 0)
+    log_result = capture(["docker", "logs", "--since", since, application_id])
     if log_result.returncode:
         raise RuntimeError("could not observe replacement logs: " + log_result.stderr.strip())
-    return assess_source_isolation(docker_inspect(application_id), docker_inspect(source_id),
-                                   denied_network_id, socket_result.stdout,
-                                   session_result.stdout, log_result.stdout + log_result.stderr,
-                                   effective_configuration, captured_ms)
+    proc_rows = list(proc_samples or []) + [socket_result.stdout]
+    session_rows = list(session_samples or []) + [session_result.stdout]
+    completed_ms = observer_completed_ms or now_ms()
+    observer, attempts = assess_source_isolation(
+        docker_inspect(application_id), docker_inspect(source_id), denied_network_id,
+        "\n".join(proc_rows), "\n".join(session_rows),
+        log_result.stdout + log_result.stderr, effective_configuration, captured_ms,
+        observer_started_ms=observer_started_ms,
+        observer_completed_ms=completed_ms)
+    observer["socket_sample_count"] = len(proc_rows)
+    observer["postgresql_session_sample_count"] = len(session_rows)
+    observer["continuous"] = bool(observer_started_ms is not None and proc_samples and session_samples)
+    if observer["continuous"]:
+        observer["kind"] = "continuous-docker-network-proc-socket-pg-stat-activity"
+    observer["complete"] = bool(observer["complete"] and observer["continuous"])
+    return observer, attempts
 
+
+class ContinuousSourceAudit:
+    """Continuously sample source sessions and replacement sockets during MIG-4.
+
+    Docker logs are read for this same window at finish.  Starting this object before
+    ``docker run`` and stopping it after the final HTTP probe closes the transient
+    startup-attempt hole left by a point-in-time audit.
+    """
+    def __init__(self, source_id, interval_seconds=.10):
+        self.source_id = source_id
+        self.interval_seconds = interval_seconds
+        self.started_ms = now_ms()
+        self.application_id = None
+        self.proc_samples = []
+        self.session_samples = []
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._sample, name="cutover-source-audit", daemon=True)
+        self._thread.start()
+
+    def set_application(self, application_id):
+        self.application_id = application_id
+
+    def _sample(self):
+        session_command = ["docker", "exec", self.source_id, "sh", "-c",
+                           "psql -U \"$POSTGRES_USER\" -d banking_kata_db -At -F '|' -c "
+                           "\"select coalesce(client_addr::text,''),coalesce(application_name,''),state "
+                           "from pg_stat_activity where backend_type='client backend'\""]
+        while not self._stop.is_set():
+            sessions = capture(session_command)
+            app_id = self.application_id
+            sockets = None
+            if app_id:
+                sockets = capture(["docker", "exec", app_id, "sh", "-c",
+                                   "cat /proc/net/tcp /proc/net/tcp6"])
+            with self._lock:
+                if sessions.returncode == 0:
+                    self.session_samples.append(sessions.stdout)
+                if sockets is not None and sockets.returncode == 0:
+                    self.proc_samples.append(sockets.stdout)
+            self._stop.wait(self.interval_seconds)
+
+    def finish(self, denied_network_id, effective_configuration):
+        completed_ms = now_ms()
+        self._stop.set()
+        self._thread.join(timeout=5)
+        if self._thread.is_alive():
+            raise RuntimeError("continuous source audit did not stop")
+        if not self.application_id or not self.proc_samples or not self.session_samples:
+            raise RuntimeError("continuous source audit did not capture the replacement window")
+        return collect_source_isolation(
+            self.application_id, self.source_id, denied_network_id, effective_configuration,
+            observer_started_ms=self.started_ms, proc_samples=self.proc_samples,
+            session_samples=self.session_samples, observer_completed_ms=completed_ms)
+
+
+def observed_container_event_ms(container_id, action, since_ms, until_ms):
+    """Read an actual daemon event timestamp; caller-supplied wall clock is not evidence."""
+    result = capture(["docker", "events", "--since", _rfc3339(since_ms - 1000),
+                      "--until", _rfc3339(until_ms + 1), "--filter", "container=" + container_id,
+                      "--filter", "event=" + action, "--format", "{{json .}}"])
+    if result.returncode:
+        raise RuntimeError("could not read Docker %s event: %s" % (action, result.stderr.strip()))
+    rows = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    matching = [row for row in rows if row.get("Action", row.get("status")) == action]
+    if len(matching) != 1:
+        raise RuntimeError("expected one Docker %s event for %s" % (action, container_id))
+    event = matching[0]
+    if event.get("timeNano") is not None:
+        return int(event["timeNano"]) // 1_000_000
+    if event.get("time") is not None:
+        return int(event["time"]) * 1000
+    raise RuntimeError("Docker event omitted its daemon timestamp")
 
 def family(workload, family_id):
     return next((item for item in workload.get("contract_families", [])
@@ -239,6 +334,13 @@ def derive_plan(workload):
 
 
 class Collector:
+    """Collect public candidate results and independent PostgreSQL source receipts.
+
+    Candidate requests use the public route.  Their source partner is obtained through
+    a read-only evidence endpoint which talks directly to JpaBankAccountStorage.  In
+    particular, a mutating request is never issued a second time merely to create its
+    source trace.
+    """
     def __init__(self, base_url, run_id):
         self.base = base_url.rstrip("/")
         self.run_id = run_id
@@ -246,18 +348,12 @@ class Collector:
         self.sequence = 0
         self.container_id = None
 
-    def request(self, method, path, *, body=None, headers=None, origin="candidate",
-                phase="post_cutover", route_template=None, comparison_id=None,
-                account=None, amount=None, operation_id=None, idempotency_key=None):
-        self.sequence += 1
-        trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
+    def _exchange(self, method, path, body, headers):
         headers = dict(headers or {})
-        headers.setdefault("X-Trace-Id", trace_id)
         data = None
         if body is not None:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
-        started = now_ms()
         status, response_body, transport = 0, None, None
         try:
             request = urllib.request.Request(self.base + path, data=data, headers=headers,
@@ -269,16 +365,20 @@ class Collector:
             status, raw = error.code, error.read()
         except OSError as error:
             raw, transport = b"", str(error)
-        completed = now_ms()
         if raw:
             try:
                 response_body = json.loads(raw.decode())
             except (ValueError, UnicodeDecodeError):
                 response_body = raw.decode(errors="replace")
+        return status, response_body, transport
+
+    def _record(self, *, trace_id, comparison_id, origin, phase, method,
+                route_template, started, completed, status, response_body,
+                transport, account, amount, operation_id, idempotency_key):
         trace = {
             "trace_id": trace_id, "comparison_id": comparison_id,
             "origin": origin, "phase": phase, "method": method,
-            "route_template": route_template or path,
+            "route_template": route_template,
             "started_ms": started, "completed_ms": completed, "status": status,
             "body": response_body, "transport_error": transport,
             "expected_domain_error": status in (400, 404, 409),
@@ -291,13 +391,70 @@ class Collector:
         self.traces.append(trace)
         return trace
 
+    def request(self, method, path, *, body=None, headers=None, origin="candidate",
+                phase="post_cutover", route_template=None, comparison_id=None,
+                account=None, amount=None, operation_id=None, idempotency_key=None):
+        if origin == "source":
+            comparison = comparison_id or "%s-pair-%04d" % (self.run_id, self.sequence + 1)
+            candidate = self.request(
+                method, path, body=body, headers=headers, origin="candidate", phase=phase,
+                route_template=route_template, comparison_id=comparison, account=account,
+                amount=amount, operation_id=operation_id, idempotency_key=idempotency_key)
+            return self.source_observation(
+                candidate, method, path, phase=phase,
+                route_template=route_template or path, comparison_id=comparison,
+                account=account, amount=amount, operation_id=operation_id,
+                idempotency_key=idempotency_key)
+        self.sequence += 1
+        trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
+        headers = dict(headers or {})
+        headers.setdefault("X-Trace-Id", trace_id)
+        started = now_ms()
+        status, response_body, transport = self._exchange(method, path, body, headers)
+        completed = now_ms()
+        return self._record(
+            trace_id=trace_id, comparison_id=comparison_id, origin=origin, phase=phase,
+            method=method, route_template=route_template or path, started=started,
+            completed=completed, status=status, response_body=response_body,
+            transport=transport, account=account, amount=amount,
+            operation_id=operation_id, idempotency_key=idempotency_key)
+
+    def source_observation(self, candidate, method, path, *, phase, route_template,
+                           comparison_id, account=None, amount=None, operation_id=None,
+                           idempotency_key=None):
+        """Read a source receipt without replaying the public operation."""
+        self.sequence += 1
+        trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
+        payload = {
+            "method": method, "path": path, "routeTemplate": route_template,
+            "requestAccountNumber": account, "requestAmount": amount,
+            "requestOperationId": operation_id,
+            "requestIdempotencyKey": idempotency_key,
+            "candidateStatus": candidate["status"], "candidateBody": candidate["body"],
+        }
+        started = now_ms()
+        control_status, receipt, transport = self._exchange(
+            "POST", "/internal/evidence/source-observation", payload,
+            {"X-Trace-Id": trace_id})
+        completed = now_ms()
+        if transport or control_status != 200 or not isinstance(receipt, dict):
+            raise RuntimeError("PostgreSQL source observation failed: %s %s %s" %
+                               (control_status, transport, receipt))
+        if "status" not in receipt or "body" not in receipt:
+            raise RuntimeError("PostgreSQL source receipt was incomplete")
+        return self._record(
+            trace_id=trace_id, comparison_id=comparison_id, origin="source", phase=phase,
+            method=method, route_template=route_template, started=started,
+            completed=completed, status=receipt["status"], response_body=receipt["body"],
+            transport=None, account=account, amount=amount, operation_id=operation_id,
+            idempotency_key=idempotency_key)
+
     def internal(self, method, path, **kwargs):
         trace = self.request(method, path, route_template=path, **kwargs)
-        self.traces.pop()             # control calls are observations, not public traffic
+        self.traces.pop()
         if trace["transport_error"] or trace["status"] >= 300:
             raise RuntimeError("control request %s %s failed: %s" % (method, path, trace))
         return trace["body"]
-
 
 def safe_number(plan, index, label):
     if index < len(plan["numbers"]):
@@ -349,10 +506,10 @@ def paired(c, method, path, *, phase, route_template, body=None, headers=None,
                           phase=phase, route_template=route_template,
                           comparison_id=comparison, account=account, amount=amount,
                           operation_id=operation_id, idempotency_key=idempotency_key)
-    source = c.request(method, path, body=body, headers=headers, origin="source",
-                       phase=phase, route_template=route_template,
-                       comparison_id=comparison, account=account, amount=amount,
-                       operation_id=operation_id, idempotency_key=idempotency_key)
+    source = c.source_observation(candidate, method, path, phase=phase,
+                                  route_template=route_template,
+                                  comparison_id=comparison, account=account, amount=amount,
+                                  operation_id=operation_id, idempotency_key=idempotency_key)
     return candidate, source
 
 
@@ -527,7 +684,7 @@ def replace_application(c, accounts, operation_id):
     mount = {"volume_id": mongo_mount.get("Name") or mongo_mount.get("Source"),
              "source": mongo_mount.get("Source"), "destination": mongo_mount.get("Destination")}
 
-    started = now_ms()
+    event_window_started = now_ms()
     disconnect = capture(["docker", "network", "disconnect", network, source_before["Id"]])
     if disconnect.returncode and "not connected" not in disconnect.stderr.lower():
         raise RuntimeError("could not deny PostgreSQL network: " + disconnect.stderr.strip())
@@ -540,10 +697,15 @@ def replace_application(c, accounts, operation_id):
     env = []
     for entry in replacement_environment():
         env.extend(["-e", entry])
+
+    # The monitor starts before the replacement process can make its first socket.
+    audit = ContinuousSourceAudit(source_before["Id"])
     new_id = run(["docker", "run", "-d", "--name", "banking-app-replacement",
                   "--label", "com.optivem.cutover.run_id=" + c.run_id,
                   "--network", network, "-p", "8080:8080"] + env + [image])
+    audit.set_application(new_id)
     c.container_id = new_id
+
     deadline = time.monotonic() + 90
     probe_account = accounts.get("preexisting") or next(iter(accounts.values()))
     while time.monotonic() < deadline:
@@ -554,6 +716,8 @@ def replace_application(c, accounts, operation_id):
         c.traces.pop()
         time.sleep(1)
     else:
+        audit._stop.set()
+        audit._thread.join(timeout=5)
         raise RuntimeError("replacement application did not become ready")
 
     restart_ids = [probe["trace_id"]]
@@ -573,6 +737,7 @@ def replace_application(c, accounts, operation_id):
                                  phase="target_only", route_template=ROUTES["read"][1],
                                  account=probe_account)["trace_id"])
 
+    # Configuration is observed from the running context while the monitor remains active.
     effective = c.internal("GET", "/internal/evidence/configuration")
     inspected = docker_inspect(new_id)
     mongo_after = scoped_compose_container("mongodb", project)
@@ -583,26 +748,39 @@ def replace_application(c, accounts, operation_id):
     mount_after = {"volume_id": mongo_mount_after.get("Name") or mongo_mount_after.get("Source"),
                    "source": mongo_mount_after.get("Source"),
                    "destination": mongo_mount_after.get("Destination")}
-    observer, attempts = collect_source_isolation(new_id, source_before["Id"], network_id, effective)
-    if not observer["complete"]:
-        raise RuntimeError("scoped PostgreSQL isolation audit was incomplete")
     network_after = json.loads(run(["docker", "network", "inspect", network]))[0]
     after_ids = set(network_after.get("Containers", {}))
     if new_id not in after_ids or source_before["Id"] in after_ids:
         raise RuntimeError("scoped network topology changed during audit")
 
+    # Stopping after the final read and topology/configuration observations proves coverage.
+    observer, attempts = audit.finish(network_id, effective)
+    if not observer["complete"]:
+        raise RuntimeError("continuous PostgreSQL isolation audit was incomplete")
+    event_window_completed = now_ms()
+    destroyed_ms = observed_container_event_ms(
+        old_id, "destroy", event_window_started, event_window_completed)
+    created_ms = observed_container_event_ms(
+        new_id, "create", event_window_started, event_window_completed)
+    if not (destroyed_ms <= created_ms and observer["started_ms"] <= created_ms
+            and observer["completed_ms"] >= max(
+                t["completed_ms"] for t in c.traces if t["trace_id"] in restart_ids)):
+        raise RuntimeError("replacement event/audit chronology is incomplete")
+
     return {
         "old_container_id": old_id, "new_container_id": new_id, "image_digest": image,
         "container_events": [
-            {"event": "destroy", "container_id": old_id, "at_ms": started, "image_digest": image},
-            {"event": "create", "container_id": new_id, "at_ms": now_ms(), "image_digest": image}],
+            {"event": "destroy", "container_id": old_id, "at_ms": destroyed_ms,
+             "image_digest": image},
+            {"event": "create", "container_id": new_id, "at_ms": created_ms,
+             "image_digest": image}],
         "target_mount_before": mount, "target_mount_after": mount_after,
         "postgresql_network_inspect": {
             "network": network, "network_id": network_after["Id"],
             "application_container_id": new_id, "postgresql_container_id": source_before["Id"],
             "attached_container_ids": sorted(after_ids),
             "attached": False, "postgresql_attached": False,
-            "source_network_denied": True, "captured_ms": now_ms(),
+            "source_network_denied": True, "captured_ms": observer["completed_ms"],
             "inspect_command": "docker network inspect " + network},
         "effective_configuration": effective,
         "connection_observer": observer,
