@@ -7,6 +7,7 @@ import com.optivem.kata.banking.cutover.AccountCutoverCoordinator;
 import com.optivem.kata.banking.cutover.AccountOperationRecoveryLifecycle;
 import com.optivem.kata.banking.cutover.CutoverAdminController;
 import com.optivem.kata.banking.cutover.CutoverFixtureController;
+import com.optivem.kata.banking.cutover.CutoverWorkloadFixtureController;
 import com.optivem.kata.banking.cutover.DualWriteBankAccountStorage;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.annotation.AnnotationConfigApplicationContext;
@@ -38,7 +39,8 @@ class PersistenceProfileConfigurationTest {
                     AccountCutoverCoordinator.class,
                     AccountOperationRecoveryLifecycle.class,
                     CutoverAdminController.class,
-                    CutoverFixtureController.class);
+                    CutoverFixtureController.class,
+                    CutoverWorkloadFixtureController.class);
             context.refresh();
 
             assertThat(context.containsBeanDefinition("mongoBankAccountStorage")).isTrue();
@@ -47,6 +49,7 @@ class PersistenceProfileConfigurationTest {
             assertThat(context.containsBeanDefinition("accountOperationRecoveryLifecycle")).isFalse();
             assertThat(context.containsBeanDefinition("cutoverAdminController")).isFalse();
             assertThat(context.containsBeanDefinition("cutoverFixtureController")).isFalse();
+            assertThat(context.containsBeanDefinition("cutoverWorkloadFixtureController")).isTrue();
         }
     }
 

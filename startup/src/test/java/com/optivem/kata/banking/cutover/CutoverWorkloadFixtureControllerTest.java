@@ -1,7 +1,6 @@
 package com.optivem.kata.banking.cutover;
 
 import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
-import com.optivem.kata.banking.adapter.driven.persistence.jpa.JpaBankAccountStorage;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Profile;
@@ -11,18 +10,17 @@ import java.time.LocalDateTime;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
-class CutoverFixtureControllerTest {
+class CutoverWorkloadFixtureControllerTest {
     @SuppressWarnings("unchecked")
     @Test
-    void targetOnlyCreationTruthDoesNotTouchEitherPersistenceAdapter() {
+    void targetOnlyCreationTruthUsesNoPersistenceCollaborator() {
         ObjectProvider identities = mock(ObjectProvider.class);
         ObjectProvider customers = mock(ObjectProvider.class);
-        ObjectProvider<JpaBankAccountStorage> source = mock(ObjectProvider.class);
         WorkloadAccountNumberGenerator numbers = mock(WorkloadAccountNumberGenerator.class);
         WorkloadDateTimeService clock = mock(WorkloadDateTimeService.class);
         when(clock.now()).thenReturn(LocalDateTime.of(2025, 1, 1, 0, 0));
-        var controller = new CutoverFixtureController(
-                identities, customers, numbers, clock, source);
+        var controller = new CutoverWorkloadFixtureController(
+                identities, customers, numbers, clock);
 
         var response = controller.creationTruth("TARGET-42", "HELDOUT-ID", 0, "2025-01-01T00:00:00Z",
                         "John", "Smith");
@@ -39,12 +37,12 @@ class CutoverFixtureControllerTest {
         assertEquals("John Smith", response.getBody().get("fullName"));
         assertEquals(0, response.getBody().get("balance"));
         assertEquals("B", response.getBody().get("score").toString());
-        verifyNoInteractions(source, identities, customers, numbers);
+        verifyNoInteractions(identities, customers, numbers);
     }
 
     @Test
     void fixtureControllerIsAvailableInAccountCutoverIncludingTargetOnly() {
-        Profile profile = CutoverFixtureController.class.getAnnotation(Profile.class);
+        Profile profile = CutoverWorkloadFixtureController.class.getAnnotation(Profile.class);
         assertNotNull(profile);
         assertArrayEquals(new String[]{ProfileNames.ACCOUNT_CUTOVER}, profile.value());
     }
