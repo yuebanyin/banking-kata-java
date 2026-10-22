@@ -162,7 +162,18 @@
     "http": {
       "additionalProperties": false,
       "properties": {
+        "actual_request_path": {
+          "minLength": 1,
+          "type": "string"
+        },
         "body": {},
+        "collector_kind": {
+          "enum": [
+            "public_route",
+            "jpa_source_observation",
+            "fixture_creation_truth"
+          ]
+        },
         "comparison_id": {
           "type": [
             "string",
@@ -175,6 +186,34 @@
         },
         "container_id": {
           "type": "string"
+        },
+        "controlled_creation_inputs": {
+          "additionalProperties": false,
+          "properties": {
+            "account_number": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "controlled_clock": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "initial_balance": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "national_identity_number": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "account_number",
+            "national_identity_number",
+            "initial_balance",
+            "controlled_clock"
+          ],
+          "type": "object"
         },
         "expected_domain_error": {
           "type": "boolean"
@@ -212,6 +251,9 @@
             "integer",
             "null"
           ]
+        },
+        "request_body": {
+          "type": "object"
         },
         "request_idempotency_key": {
           "type": [

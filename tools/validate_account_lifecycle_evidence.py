@@ -3,6 +3,7 @@
 import argparse
 import json
 import math
+import urllib.parse
 import uuid
 from pathlib import Path
 
@@ -205,6 +206,52 @@ def validate_workload_binding(evidence, workload):
 def validate_observation_provenance(evidence):
     """Reject same-path pseudo-pairs and audit windows which miss replacement traffic."""
     traces = evidence.get("http_trace", [])
+    # Schema v5 requires provenance on every trace.  The conditional keeps this
+    # semantic helper usable by focused legacy unit fixtures which intentionally
+    # bypass structural schema validation.
+    provenance_traces = (traces if any("collector_kind" in row for row in traces)
+                         else [])
+    for trace in provenance_traces:
+        kind = trace.get("collector_kind")
+        actual_path = trace.get("actual_request_path")
+        origin = trace.get("origin")
+        comparison = trace.get("comparison_id")
+        route = trace.get("route_template")
+        account = trace.get("request_account_number")
+
+        if kind == "public_route":
+            require(origin == "candidate",
+                    "public-route observation must be candidate-side")
+            if route == "/bank-accounts":
+                expected_path = "/bank-accounts"
+            else:
+                require(isinstance(account, str) and account,
+                        "parameterized public route lacks account identity")
+                suffix = {
+                    "/bank-accounts/{accountNumber}": "",
+                    "/bank-accounts/{accountNumber}/deposits": "/deposits",
+                    "/bank-accounts/{accountNumber}/withdrawals": "/withdrawals",
+                }.get(route)
+                require(suffix is not None, "unknown public route template")
+                expected_path = ("/bank-accounts/" +
+                                 urllib.parse.quote(account, safe="") + suffix)
+            require(actual_path == expected_path,
+                    "public-route provenance path mismatch")
+        elif kind == "jpa_source_observation":
+            require(origin == "source" and comparison is not None,
+                    "JPA observation must be a paired source receipt")
+            require(actual_path == "/internal/evidence/source-observation",
+                    "JPA observation provenance path mismatch")
+        elif kind == "fixture_creation_truth":
+            require(origin == "source" and comparison is None and
+                    trace.get("phase") == "target_only",
+                    "fixture truth must be an unpaired target-only source receipt")
+            require(isinstance(actual_path, str) and actual_path.startswith(
+                    "/internal/cutover/fixtures/creation-truth/"),
+                    "fixture creation truth provenance path mismatch")
+        else:
+            require(False, "unknown or missing HTTP collector provenance")
+
     pairs = {}
     for trace in traces:
         comparison = trace.get("comparison_id")
@@ -401,28 +448,72 @@ def validate_mongo_snapshots(evidence, journals, traces):
         require(operation_id in after[number]["appliedOperationIds"],
                 "final-only applied creation is absent from operation order: " + number)
 
+        # Final-only state is created after PostgreSQL denial.  Bind the fixture
+        # receipt to the exact public POST and to controlled, persistence-free inputs.
+        require(creation.get("phase") == "target_only",
+                "final-only creation must execute in target_only: " + number)
+        require(creation.get("collector_kind") == "public_route" and
+                creation.get("actual_request_path") == "/bank-accounts",
+                "final-only creation lacks public-route provenance: " + number)
+        inputs = creation.get("controlled_creation_inputs")
+        request_body = creation.get("request_body")
+        require(isinstance(inputs, dict),
+                "final-only creation lacks controlled inputs: " + number)
+        require(isinstance(request_body, dict),
+                "final-only creation lacks its public request body: " + number)
+        require(inputs.get("account_number") == number,
+                "final-only controlled account input mismatch: " + number)
+        require(request_body.get("nationalIdentityNumber") ==
+                inputs.get("national_identity_number"),
+                "final-only controlled identity input mismatch: " + number)
+        require(request_body.get("balance") == inputs.get("initial_balance"),
+                "final-only controlled balance input mismatch: " + number)
+        require(isinstance(inputs.get("controlled_clock"), str) and
+                inputs.get("controlled_clock"),
+                "final-only controlled clock input is missing: " + number)
+        expected_truth_path = (
+            "/internal/cutover/fixtures/creation-truth/" +
+            urllib.parse.quote(number, safe="") +
+            "?nationalIdentityNumber=" +
+            urllib.parse.quote(inputs["national_identity_number"], safe="") +
+            "&balance=" + str(inputs["initial_balance"]) +
+            "&controlledClock=" +
+            urllib.parse.quote(inputs["controlled_clock"], safe=""))
+
         # The candidate GET and MongoDB snapshot are the same target-side
         # observation and may agree while both are corrupt.  Anchor immutable
         # identity, score, and initial balance in the separately collected JPA
         # source receipt.  lifecycle_observation records this GET immediately
         # after the successful creation and before returning to the workload.
-        source_reads = [row for row in traces
-                        if row.get("origin") == "source"
-                        and row.get("method") == "GET"
-                        and row.get("route_template") == "/bank-accounts/{accountNumber}"
-                        and row.get("status") == 200
-                        and row.get("request_account_number") == number
-                        and row.get("comparison_id") is None
-                        and row.get("request_operation_id") == operation_id
-                        and row.get("request_idempotency_key") == idempotency_key
-                        and row.get("started_ms", -1) >= creation.get("completed_ms", upper + 1)
-                        and row.get("completed_ms", upper + 1) <= upper]
-        require(source_reads,
-                "final-only account lacks independent source creation truth: " + number)
-        truth = min(source_reads, key=lambda row: (row["completed_ms"], row["trace_id"]))
+        linked_source_reads = [row for row in traces
+                               if row.get("origin") == "source"
+                               and row.get("method") == "GET"
+                               and row.get("route_template") ==
+                                   "/bank-accounts/{accountNumber}"
+                               and row.get("status") == 200
+                               and row.get("request_account_number") == number
+                               and row.get("comparison_id") is None
+                               and row.get("request_operation_id") == operation_id
+                               and row.get("request_idempotency_key") == idempotency_key
+                               and row.get("started_ms", -1) >=
+                                   creation.get("completed_ms", upper + 1)
+                               and row.get("completed_ms", upper + 1) <= upper]
+        require(not any(row.get("collector_kind") == "jpa_source_observation"
+                        for row in linked_source_reads),
+                "JPA provenance is prohibited for final-only creation truth: " + number)
+        source_reads = [row for row in linked_source_reads
+                        if row.get("phase") == "target_only"
+                        and row.get("collector_kind") == "fixture_creation_truth"
+                        and row.get("actual_request_path") == expected_truth_path
+                        and row.get("controlled_creation_inputs") == inputs]
+        require(len(source_reads) == 1,
+                "final-only account requires one fixture creation truth: " + number)
+        truth = source_reads[0]
         body = truth.get("body")
         require(isinstance(body, dict) and body.get("accountNumber") == number,
                 "final-only source truth has wrong account identity: " + number)
+        require(body.get("balance") == inputs.get("initial_balance"),
+                "final-only source truth balance does not match creation input: " + number)
         require(isinstance(body.get("fullName"), str) and body["fullName"],
                 "final-only source truth has invalid fullName: " + number)
         require(isinstance(body.get("balance"), int),

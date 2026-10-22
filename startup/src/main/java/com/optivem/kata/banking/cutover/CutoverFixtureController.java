@@ -72,7 +72,13 @@ public class CutoverFixtureController {
     public ResponseEntity<Map<String, Object>> creationTruth(
             @PathVariable String accountNumber,
             @RequestParam String nationalIdentityNumber,
-            @RequestParam(defaultValue = "0") int balance) {
+            @RequestParam(defaultValue = "0") int balance,
+            @RequestParam String controlledClock) {
+        LocalDateTime expectedClock;
+        try { expectedClock = OffsetDateTime.parse(controlledClock).toLocalDateTime(); }
+        catch (RuntimeException ignored) { expectedClock = LocalDateTime.parse(controlledClock); }
+        if (!clock.now().equals(expectedClock)) return ResponseEntity.badRequest().build();
+
         var account = new BankAccountDto();
         account.setAccountId(1L);
         account.setAccountNumber(accountNumber);
@@ -83,7 +89,11 @@ public class CutoverFixtureController {
         account.setBalance(balance);
 
         var body = new LinkedHashMap<String, Object>();
+        body.put("collectorKind", "fixture_creation_truth");
         body.put("accountNumber", accountNumber);
+        body.put("nationalIdentityNumber", nationalIdentityNumber);
+        body.put("initialBalance", balance);
+        body.put("controlledClock", controlledClock);
         body.put("fullName", "John Smith");
         body.put("balance", balance);
         body.put("score", DefaultScoreCalculator.create(clock)

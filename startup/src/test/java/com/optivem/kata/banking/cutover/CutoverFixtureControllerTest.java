@@ -24,11 +24,15 @@ class CutoverFixtureControllerTest {
         var controller = new CutoverFixtureController(
                 identities, customers, numbers, clock, source);
 
-        var response = controller.creationTruth("TARGET-42", "HELDOUT-ID", 0);
+        var response = controller.creationTruth("TARGET-42", "HELDOUT-ID", 0, "2025-01-01T00:00:00Z");
 
         assertEquals(200, response.getStatusCodeValue());
         assertNotNull(response.getBody());
+        assertEquals("fixture_creation_truth", response.getBody().get("collectorKind"));
         assertEquals("TARGET-42", response.getBody().get("accountNumber"));
+        assertEquals("HELDOUT-ID", response.getBody().get("nationalIdentityNumber"));
+        assertEquals(0, response.getBody().get("initialBalance"));
+        assertEquals("2025-01-01T00:00:00Z", response.getBody().get("controlledClock"));
         assertEquals("John Smith", response.getBody().get("fullName"));
         assertEquals(0, response.getBody().get("balance"));
         assertTrue(response.getBody().get("score").toString().matches("A|B|C"));

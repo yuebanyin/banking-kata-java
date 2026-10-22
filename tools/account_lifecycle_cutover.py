@@ -375,7 +375,9 @@ class Collector:
 
     def _record(self, *, trace_id, comparison_id, origin, phase, method,
                 route_template, started, completed, status, response_body,
-                transport, account, amount, operation_id, idempotency_key):
+                transport, account, amount, operation_id, idempotency_key,
+                collector_kind=None, actual_request_path=None,
+                controlled_creation_inputs=None, request_body=None):
         trace = {
             "trace_id": trace_id, "comparison_id": comparison_id,
             "origin": origin, "phase": phase, "method": method,
@@ -387,6 +389,14 @@ class Collector:
             "request_operation_id": operation_id,
             "request_idempotency_key": idempotency_key,
         }
+        if request_body is not None:
+            trace["request_body"] = request_body
+        if collector_kind is not None:
+            trace["collector_kind"] = collector_kind
+        if actual_request_path is not None:
+            trace["actual_request_path"] = actual_request_path
+        if controlled_creation_inputs is not None:
+            trace["controlled_creation_inputs"] = controlled_creation_inputs
         if self.container_id:
             trace["container_id"] = self.container_id
         self.traces.append(trace)
@@ -394,7 +404,8 @@ class Collector:
 
     def request(self, method, path, *, body=None, headers=None, origin="candidate",
                 phase="target_only", route_template=None, comparison_id=None,
-                account=None, amount=None, operation_id=None, idempotency_key=None):
+                account=None, amount=None, operation_id=None, idempotency_key=None,
+                controlled_creation_inputs=None):
         headers = dict(headers or {})
         if origin == "source":
             headers["X-TB4-Source-Only"] = "true"
@@ -422,7 +433,9 @@ class Collector:
             method=method, route_template=route_template or path, started=started,
             completed=completed, status=status, response_body=response_body,
             transport=transport, account=account, amount=amount,
-            operation_id=operation_id, idempotency_key=idempotency_key)
+            operation_id=operation_id, idempotency_key=idempotency_key,
+            collector_kind="public_route", actual_request_path=path,
+            controlled_creation_inputs=controlled_creation_inputs, request_body=body)
 
     def source_observation(self, candidate, method, path, *, phase, route_template,
                            comparison_id, account=None, amount=None, operation_id=None,
@@ -460,39 +473,62 @@ class Collector:
             started=receipt_started, completed=receipt_started + public_duration,
             status=receipt["status"], response_body=receipt["body"],
             transport=None, account=account, amount=amount, operation_id=operation_id,
-            idempotency_key=idempotency_key)
+            idempotency_key=idempotency_key,
+            collector_kind="jpa_source_observation",
+            actual_request_path="/internal/evidence/source-observation",
+            request_body=request_body)
 
-    def creation_truth(self, creation, national_identity_number, balance, *, phase):
+    def creation_truth(self, creation, national_identity_number, balance, controlled_clock,
+                       *, phase):
         """Collect controlled customer/scoring truth without a public or JPA request.
 
-        This endpoint is persistence independent and remains available in the
-        audited target-only replacement.  The returned source trace is linked to
-        the one creation by its operation and idempotency identities, but is not
-        presented as a public source/candidate comparison pair.
+        The fixture response must attest the exact controlled inputs.  Evidence records
+        the real internal request path and a collector kind distinct from both public
+        Mongo-backed HTTP and JPA source observations.
         """
         self.sequence += 1
         trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
+        account_number = creation["body"]["accountNumber"]
+        inputs = {
+            "account_number": account_number,
+            "national_identity_number": national_identity_number,
+            "initial_balance": int(balance),
+            "controlled_clock": controlled_clock,
+        }
         path = ("/internal/cutover/fixtures/creation-truth/" +
-                urllib.parse.quote(creation["body"]["accountNumber"]) +
-                "?nationalIdentityNumber=" + urllib.parse.quote(national_identity_number) +
-                "&balance=" + str(balance))
+                urllib.parse.quote(account_number, safe="") +
+                "?nationalIdentityNumber=" +
+                urllib.parse.quote(national_identity_number, safe="") +
+                "&balance=" + str(int(balance)) +
+                "&controlledClock=" + urllib.parse.quote(controlled_clock, safe=""))
         started = now_ms()
-        status, body, transport = self._exchange(
+        status, receipt, transport = self._exchange(
             "GET", path, None, {"X-Trace-Id": trace_id,
                                 "X-Evidence-Time": self.evidence_time})
         completed = now_ms()
-        if transport or status != 200 or not isinstance(body, dict):
+        if transport or status != 200 or not isinstance(receipt, dict):
             raise RuntimeError("target-independent creation truth failed: %s %s %s" %
-                               (status, transport, body))
-        if body.get("accountNumber") != creation["body"].get("accountNumber"):
-            raise RuntimeError("target-independent creation truth has wrong account")
+                               (status, transport, receipt))
+        expected_attestation = {
+            "collectorKind": "fixture_creation_truth",
+            "accountNumber": account_number,
+            "nationalIdentityNumber": national_identity_number,
+            "initialBalance": int(balance),
+            "controlledClock": controlled_clock,
+        }
+        if any(receipt.get(key) != value for key, value in expected_attestation.items()):
+            raise RuntimeError("target-independent creation truth provenance/input mismatch")
+        body = {key: receipt.get(key) for key in
+                ("accountNumber", "fullName", "balance", "score")}
         return self._record(
             trace_id=trace_id, comparison_id=None, origin="source", phase=phase,
             method="GET", route_template=ROUTES["read"][1], started=started,
             completed=completed, status=status, response_body=body, transport=None,
-            account=creation.get("body", {}).get("accountNumber"), amount=None,
+            account=account_number, amount=None,
             operation_id=creation.get("request_operation_id"),
-            idempotency_key=creation.get("request_idempotency_key"))
+            idempotency_key=creation.get("request_idempotency_key"),
+            collector_kind="fixture_creation_truth", actual_request_path=path,
+            controlled_creation_inputs=inputs)
 
     def internal(self, method, path, **kwargs):
         trace = self.request(method, path, route_template=path, **kwargs)
@@ -840,14 +876,20 @@ def replace_application(c, accounts, operation_id, heldout_creation, workload_cl
         headers={"X-Operation-Id": create_operation,
                  "Idempotency-Key": create_operation},
         phase="target_only", route_template=ROUTES["create"][1],
-        operation_id=create_operation, idempotency_key=create_operation)
+        operation_id=create_operation, idempotency_key=create_operation,
+        controlled_creation_inputs={
+            "account_number": heldout_account,
+            "national_identity_number": heldout_identity,
+            "initial_balance": 0,
+            "controlled_clock": workload_clock,
+        })
     if (created["status"] != 201 or created.get("body") != {
             "accountNumber": heldout_account}):
         raise RuntimeError("target-only held-out creation did not preserve its contract")
     restart_ids.append(created["trace_id"])
 
     creation_truth = c.creation_truth(
-        created, heldout_identity, 0, phase="target_only")
+        created, heldout_identity, 0, workload_clock, phase="target_only")
     if creation_truth["status"] != 200:
         raise RuntimeError("target-independent creation truth was unavailable")
 

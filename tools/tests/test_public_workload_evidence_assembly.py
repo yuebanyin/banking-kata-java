@@ -3,6 +3,7 @@ import json
 import tempfile
 import types
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -101,6 +102,14 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
                 "request_idempotency_key": idempotency_key,
                 "container_id": container_id,
             })
+            if origin == "candidate":
+                row["collector_kind"] = "public_route"
+                row["actual_request_path"] = (route if account is None else
+                    route.replace("{accountNumber}",
+                                  urllib.parse.quote(account, safe="")))
+            else:
+                row["collector_kind"] = "jpa_source_observation"
+                row["actual_request_path"] = "/internal/evidence/source-observation"
             collector.traces.append(row)
             return row
 
@@ -175,17 +184,20 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
                 ids = []
                 for index in range(20):
                     at_ms = 10 + index * 3
+                    account = (None if route == runner.ROUTES["create"][1] else
+                               (next(iter(_accounts.values())) if method == "GET"
+                                else "latency-missing"))
                     if origin == "source":
                         public = trace(collector, method, route, phase, at_ms,
-                                       404, origin="candidate")
+                                       404, account=account, origin="candidate")
                         comparison = "latency-comparison-" + public["trace_id"]
                         public["comparison_id"] = comparison
                         row = trace(collector, method, route, phase, at_ms + 2,
-                                    404, origin="source")
+                                    404, account=account, origin="source")
                         row["comparison_id"] = comparison
                     else:
                         row = trace(collector, method, route, phase, at_ms,
-                                    404, origin=origin)
+                                    404, account=account, origin=origin)
                     ids.append(row["trace_id"])
                 result[(method, route)] = ids
             return result

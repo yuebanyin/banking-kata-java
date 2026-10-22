@@ -157,6 +157,25 @@ http_schema["properties"].update({
  "request_operation_id":{"type":["string","null"]},
  "request_idempotency_key":{"type":["string","null"]},
 })
+
+# HTTP provenance has a closed, schema-backed vocabulary when present.
+# Semantic validation requires these fields on runtime observations while the
+# optional schema declaration preserves compatibility with pre-v5 fixtures.
+http_schema["properties"].update({
+ "collector_kind":{"enum":["public_route","jpa_source_observation","fixture_creation_truth"]},
+ "actual_request_path":{"type":"string","minLength":1},
+ "request_body":{"type":"object"},
+ "controlled_creation_inputs":{
+  "type":"object","additionalProperties":False,
+  "required":["account_number","national_identity_number","initial_balance","controlled_clock"],
+  "properties":{
+   "account_number":{"type":"string","minLength":1},
+   "national_identity_number":{"type":"string","minLength":1},
+   "initial_balance":{"type":"integer","minimum":0},
+   "controlled_clock":{"type":"string","minLength":1},
+  },
+ },
+})
 schema["properties"]["schema_version"]["const"] = 4
 contract["evidence_binding_contract"] = {
  "journal_to_http":"Each acknowledged journal operation links to a candidate POST on the route for its kind. Captured operation/idempotency IDs match; financial path account and request amount also match. Financial status and body match the route/outcome contract and an exact source request pair. Every acknowledged 201 creation is unconditionally applied.",

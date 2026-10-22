@@ -61,6 +61,26 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
         source_truth["comparison_id"] = None
         source_truth["request_operation_id"] = journal["operation_id"]
         source_truth["request_idempotency_key"] = journal["idempotency_key"]
+        inputs = {
+            "account_number": "ACC-NEW",
+            "national_identity_number": "IDENTITY-NEW",
+            "initial_balance": 0,
+            "controlled_clock": "2025-01-01T00:00:00Z",
+        }
+        create.update({
+            "phase": "target_only", "collector_kind": "public_route",
+            "actual_request_path": "/bank-accounts",
+            "request_body": {"nationalIdentityNumber": "IDENTITY-NEW", "balance": 0},
+            "controlled_creation_inputs": inputs,
+        })
+        source_truth.update({
+            "phase": "target_only", "collector_kind": "fixture_creation_truth",
+            "actual_request_path":
+                "/internal/cutover/fixtures/creation-truth/ACC-NEW"
+                "?nationalIdentityNumber=IDENTITY-NEW&balance=0"
+                "&controlledClock=2025-01-01T00%3A00%3A00Z",
+            "controlled_creation_inputs": dict(inputs),
+        })
         return [journal], [create, source_truth, read]
 
     def test_accepts_one_linked_applied_creation_between_snapshots(self):
@@ -117,9 +137,45 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
     def test_rejects_truth_not_bound_to_the_creation_operation(self):
         journals, traces = self.rows()
         traces[1]["request_operation_id"] = "unrelated-operation"
-        with self.assertRaisesRegex(ValueError, "independent source creation truth"):
+        with self.assertRaisesRegex(ValueError, "fixture creation truth"):
             self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
 
+
+
+    def test_rejects_mislabeled_or_arbitrary_creation_truth(self):
+        for key, value in (("collector_kind", "public_route"),
+                           ("actual_request_path", "/bank-accounts/ACC-NEW")):
+            journals, traces = self.rows()
+            traces[1][key] = value
+            with self.assertRaisesRegex(ValueError, "fixture creation truth"):
+                self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+    def test_rejects_jpa_provenance_for_target_only_creation_truth(self):
+        journals, traces = self.rows()
+        traces[1]["collector_kind"] = "jpa_source_observation"
+        traces[1]["actual_request_path"] = "/internal/evidence/source-observation"
+        with self.assertRaisesRegex(ValueError, "JPA provenance is prohibited"):
+            self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+    def test_rejects_mongo_backed_truth_masquerading_as_source(self):
+        journals, traces = self.rows()
+        traces[1]["collector_kind"] = "public_route"
+        traces[1]["actual_request_path"] = "/bank-accounts/ACC-NEW"
+        with self.assertRaisesRegex(ValueError, "fixture creation truth"):
+            self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+    def test_rejects_truth_inputs_not_bound_to_public_post(self):
+        journals, traces = self.rows()
+        traces[1]["controlled_creation_inputs"] = dict(
+            traces[1]["controlled_creation_inputs"],
+            national_identity_number="WRONG")
+        with self.assertRaisesRegex(ValueError, "fixture creation truth"):
+            self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+        journals, traces = self.rows()
+        traces[0]["request_body"]["nationalIdentityNumber"] = "WRONG"
+        with self.assertRaisesRegex(ValueError, "controlled identity input mismatch"):
+            self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
 
 
 if __name__ == "__main__":
