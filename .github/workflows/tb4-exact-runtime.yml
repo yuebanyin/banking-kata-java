@@ -1,0 +1,135 @@
+name: TB4 exact runtime verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [tb4-runtime-harness]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      RABBITMQ_USER: guest
+      RABBITMQ_PASS: guest
+      POSTGRES_URL: jdbc:postgresql://localhost:5400/banking_kata_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin
+      MONGODB_URI: mongodb://root:cutover@localhost:27017/?authSource=admin
+      MONGODB_DATABASE_NAME: banking_kata_db
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: cutover
+      ME_CONFIG_MONGODB_ADMINUSERNAME: root
+      ME_CONFIG_MONGODB_ADMINPASSWORD: cutover
+      ME_CONFIG_MONGODB_SERVER: mongodb
+    steps:
+      - name: Check out exact candidate revision
+        uses: actions/checkout@v4
+        with:
+          repository: yuebanyin/banking-kata-java
+          ref: dbed4599a2f0cfa3a0f9e17aa6bc185ed1279392
+          path: candidate
+
+      - name: Assert exact clean revision
+        working-directory: candidate
+        run: |
+          test "$(git rev-parse HEAD)" = dbed4599a2f0cfa3a0f9e17aa6bc185ed1279392
+          git status --short
+          git diff --exit-code
+          git diff --cached --exit-code
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Compose v1
+        run: |
+          sudo curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          docker version
+          docker-compose version
+          docker-compose version --short | grep '^1\.29\.2$'
+
+      - name: Policy and core checks
+        working-directory: candidate
+        run: |
+          python3 tb4_artifacts/check_policy_assets.py
+          ./gradlew --no-daemon coreTest
+
+      - name: Fresh image pulls and Compose-v1 readiness
+        working-directory: candidate
+        run: |
+          docker-compose pull
+          docker-compose up -d
+          python3 tools/wait_for_cutover_services.py --timeout 120
+          docker-compose ps
+
+      - name: JPA MongoDB REST and system tests
+        working-directory: candidate
+        run: |
+          ./gradlew --no-daemon \
+            :adapter-persistence-jpa:test \
+            :adapter-persistence-mongo:test \
+            :adapter-restapi-spring:test \
+            systemTest
+
+      - name: Reset to a fresh cutover stack
+        working-directory: candidate
+        run: |
+          docker-compose down -v --remove-orphans
+          docker-compose up -d
+          python3 tools/wait_for_cutover_services.py --timeout 120
+          docker-compose ps
+
+      - name: Run and validate real public evidence
+        working-directory: candidate
+        run: |
+          mkdir -p build/tb4
+          python3 tools/account_lifecycle_cutover.py \
+            --workload tb4_artifacts/public_workloads.json \
+            --output build/tb4/account_lifecycle_evidence.json
+          python3 tools/validate_account_lifecycle_evidence.py \
+            --workload tb4_artifacts/public_workloads.json \
+            --evidence build/tb4/account_lifecycle_evidence.json \
+            --schema tb4_artifacts/candidate_evidence.schema.json
+          test -s build/tb4/account_lifecycle_evidence.json
+
+      - name: Final repository integrity
+        working-directory: candidate
+        run: |
+          test "$(git rev-parse HEAD)" = dbed4599a2f0cfa3a0f9e17aa6bc185ed1279392
+          git diff --exit-code
+          git diff --cached --exit-code
+          git ls-files --others --exclude-standard > /tmp/tb4-untracked
+          test ! -s /tmp/tb4-untracked
+          if git ls-files --error-unmatch build/tb4/account_lifecycle_evidence.json; then
+            echo "evidence must not be committed" >&2
+            exit 1
+          fi
+
+      - name: Capture runtime diagnostics
+        if: always()
+        working-directory: candidate
+        run: |
+          mkdir -p build/tb4/runtime-logs
+          docker ps -a --no-trunc > build/tb4/runtime-logs/docker-ps.txt || true
+          docker-compose ps > build/tb4/runtime-logs/compose-ps.txt 2>&1 || true
+          docker inspect mongodb > build/tb4/runtime-logs/mongodb-inspect.json 2>&1 || true
+          docker inspect banking-app-replacement > build/tb4/runtime-logs/replacement-inspect.json 2>&1 || true
+          docker logs mongodb > build/tb4/runtime-logs/mongodb.log 2>&1 || true
+          docker logs banking-app-replacement > build/tb4/runtime-logs/replacement.log 2>&1 || true
+          docker logs postgres > build/tb4/runtime-logs/postgres.log 2>&1 || true
+
+      - name: Upload evidence and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tb4-exact-runtime-${{ github.run_id }}
+          path: candidate/build/tb4
+          if-no-files-found: warn
+          retention-days: 3
