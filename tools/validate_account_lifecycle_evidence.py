@@ -14,6 +14,26 @@ ROUTES = {
     ("POST", "/bank-accounts/{accountNumber}/withdrawals"),
 }
 
+CONTROLLED_CUSTOMER_FIRST_NAME = "John"
+CONTROLLED_CUSTOMER_LAST_NAME = "Smith"
+
+
+def derive_controlled_creation_state(first_name, last_name, initial_balance):
+    """Independently derive target-only holder and score from fixture inputs."""
+    require(isinstance(first_name, str) and first_name,
+            "controlled first name is required")
+    require(isinstance(last_name, str) and last_name,
+            "controlled last name is required")
+    require(isinstance(initial_balance, int),
+            "controlled initial balance must be an integer")
+    length = len(first_name) + len(last_name)
+    name_factor = 3 if length <= 5 else length * 3 if length > 10 else length
+    # Opening and scoring dates are the same controlled clock date.
+    aggregation = name_factor + initial_balance + 5
+    score = "C" if aggregation <= 0 else "B" if aggregation % 2 == 0 else "A"
+    return {"fullName": first_name + " " + last_name,
+            "balance": initial_balance, "score": score}
+
 
 def require(condition, message):
     if not condition:
@@ -471,6 +491,13 @@ def validate_mongo_snapshots(evidence, journals, traces):
         require(isinstance(inputs.get("controlled_clock"), str) and
                 inputs.get("controlled_clock"),
                 "final-only controlled clock input is missing: " + number)
+        require(inputs.get("controlled_first_name") == CONTROLLED_CUSTOMER_FIRST_NAME,
+                "final-only controlled first-name input mismatch: " + number)
+        require(inputs.get("controlled_last_name") == CONTROLLED_CUSTOMER_LAST_NAME,
+                "final-only controlled last-name input mismatch: " + number)
+        expected_state = derive_controlled_creation_state(
+            inputs["controlled_first_name"], inputs["controlled_last_name"],
+            inputs["initial_balance"])
         expected_truth_path = (
             "/internal/cutover/fixtures/creation-truth/" +
             urllib.parse.quote(number, safe="") +
@@ -478,7 +505,11 @@ def validate_mongo_snapshots(evidence, journals, traces):
             urllib.parse.quote(inputs["national_identity_number"], safe="") +
             "&balance=" + str(inputs["initial_balance"]) +
             "&controlledClock=" +
-            urllib.parse.quote(inputs["controlled_clock"], safe=""))
+            urllib.parse.quote(inputs["controlled_clock"], safe="") +
+            "&firstName=" +
+            urllib.parse.quote(inputs["controlled_first_name"], safe="") +
+            "&lastName=" +
+            urllib.parse.quote(inputs["controlled_last_name"], safe=""))
 
         # The candidate GET and MongoDB snapshot are the same target-side
         # observation and may agree while both are corrupt.  Anchor immutable
@@ -512,16 +543,14 @@ def validate_mongo_snapshots(evidence, journals, traces):
         body = truth.get("body")
         require(isinstance(body, dict) and body.get("accountNumber") == number,
                 "final-only source truth has wrong account identity: " + number)
-        require(body.get("balance") == inputs.get("initial_balance"),
-                "final-only source truth balance does not match creation input: " + number)
-        require(isinstance(body.get("fullName"), str) and body["fullName"],
-                "final-only source truth has invalid fullName: " + number)
-        require(isinstance(body.get("balance"), int),
-                "final-only source truth has invalid balance: " + number)
-        require(body.get("score") in ("A", "B", "C"),
-                "final-only source truth has invalid score: " + number)
+        require(body.get("fullName") == expected_state["fullName"],
+                "final-only source truth fullName differs from controlled inputs: " + number)
+        require(body.get("balance") == expected_state["balance"],
+                "final-only source truth balance differs from controlled inputs: " + number)
+        require(body.get("score") == expected_state["score"],
+                "final-only source truth score differs from controlled inputs: " + number)
 
-        expected_balance = body["balance"]
+        expected_balance = expected_state["balance"]
         for operation in journals:
             if (operation.get("acknowledged") is True
                     and operation.get("result") == "applied"
@@ -531,10 +560,10 @@ def validate_mongo_snapshots(evidence, journals, traces):
                 expected_balance += (operation["amount"] if operation["kind"] == "deposit"
                                      else -operation["amount"])
         current = after[number]
-        require(current["fullName"] == body["fullName"],
-                "final-only fullName differs from independent source truth: " + number)
-        require(current["score"] == body["score"],
-                "final-only score differs from independent source truth: " + number)
+        require(current["fullName"] == expected_state["fullName"],
+                "final-only fullName differs from controlled derivation: " + number)
+        require(current["score"] == expected_state["score"],
+                "final-only score differs from controlled derivation: " + number)
         require(current["balance"] == expected_balance,
                 "final-only balance differs from source truth plus journal replay: " + number)
 

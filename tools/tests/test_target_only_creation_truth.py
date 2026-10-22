@@ -21,7 +21,8 @@ class TargetOnlyCreationTruthTest(unittest.TestCase):
                 "accountNumber": "TARGET-42", "fullName": "John Smith",
                 "nationalIdentityNumber": "HELDOUT-ID", "initialBalance": 0,
                 "controlledClock": "2025-01-01T00:00:00Z",
-                "balance": 0, "score": "C"
+                "firstName": "John", "lastName": "Smith",
+                "balance": 0, "score": "B"
             }, None
 
         collector._exchange = exchange
@@ -38,6 +39,8 @@ class TargetOnlyCreationTruthTest(unittest.TestCase):
         self.assertEqual("GET", calls[0][0])
         self.assertIn("/internal/cutover/fixtures/creation-truth/TARGET-42", calls[0][1])
         self.assertNotIn("/internal/evidence/source-observation", calls[0][1])
+        self.assertIn("firstName=John", calls[0][1])
+        self.assertIn("lastName=Smith", calls[0][1])
         self.assertEqual("source", truth["origin"])
         self.assertIsNone(truth["comparison_id"])
         self.assertEqual("heldout-create-op", truth["request_operation_id"])
@@ -50,6 +53,8 @@ class TargetOnlyCreationTruthTest(unittest.TestCase):
             "national_identity_number": "HELDOUT-ID",
             "initial_balance": 0,
             "controlled_clock": "2025-01-01T00:00:00Z",
+            "controlled_first_name": "John",
+            "controlled_last_name": "Smith",
         }, truth["controlled_creation_inputs"])
 
     def test_never_replays_the_public_creation(self):
@@ -61,7 +66,8 @@ class TargetOnlyCreationTruthTest(unittest.TestCase):
                 "accountNumber": "TARGET-7", "fullName": "John Smith",
                 "nationalIdentityNumber": "IDENTITY-7", "initialBalance": 8,
                 "controlledClock": "2025-01-01T00:00:00Z",
-                "balance": 8, "score": "C"
+                "firstName": "John", "lastName": "Smith",
+                "balance": 8, "score": "B"
             }, None))
         creation = {
             "trace_id": "heldout-create-7",
@@ -88,13 +94,34 @@ class TargetOnlyCreationTruthTest(unittest.TestCase):
                  "accountNumber": "TARGET-9", "fullName": "John Smith",
                  "nationalIdentityNumber": "WRONG", "initialBalance": 0,
                  "controlledClock": "2025-01-01T00:00:00Z",
-                 "balance": 0, "score": "C"}):
+                 "balance": 0, "score": "B"}):
             collector = runner.Collector("http://candidate", "heldout")
             collector._exchange = lambda *_args, response=response: (200, response, None)
             with self.assertRaisesRegex(RuntimeError, "provenance/input mismatch"):
                 collector.creation_truth(
                     creation, "IDENTITY-9", 0, "2025-01-01T00:00:00Z",
                     phase="target_only")
+
+
+    def test_rejects_forged_name_and_score_with_valid_attestation(self):
+        creation = {
+            "trace_id": "create", "body": {"accountNumber": "TARGET-9"},
+            "request_operation_id": "operation-9",
+            "request_idempotency_key": "operation-9",
+        }
+        response = {
+            "collectorKind": "fixture_creation_truth",
+            "accountNumber": "TARGET-9", "nationalIdentityNumber": "IDENTITY-9",
+            "initialBalance": 0, "controlledClock": "2025-01-01T00:00:00Z",
+            "firstName": "John", "lastName": "Smith",
+            "fullName": "Forged Holder", "balance": 0, "score": "A",
+        }
+        collector = runner.Collector("http://candidate", "heldout")
+        collector._exchange = lambda *args: (200, response, None)
+        with self.assertRaisesRegex(RuntimeError, "derived-state mismatch"):
+            collector.creation_truth(
+                creation, "IDENTITY-9", 0, "2025-01-01T00:00:00Z",
+                phase="target_only")
 
 
 if __name__ == "__main__":

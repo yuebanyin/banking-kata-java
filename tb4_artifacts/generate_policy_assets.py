@@ -167,12 +167,14 @@ http_schema["properties"].update({
  "request_body":{"type":"object"},
  "controlled_creation_inputs":{
   "type":"object","additionalProperties":False,
-  "required":["account_number","national_identity_number","initial_balance","controlled_clock"],
+  "required":["account_number","national_identity_number","initial_balance","controlled_clock","controlled_first_name","controlled_last_name"],
   "properties":{
    "account_number":{"type":"string","minLength":1},
    "national_identity_number":{"type":"string","minLength":1},
    "initial_balance":{"type":"integer","minimum":0},
    "controlled_clock":{"type":"string","minLength":1},
+   "controlled_first_name":{"type":"string","minLength":1},
+   "controlled_last_name":{"type":"string","minLength":1},
   },
  },
 })

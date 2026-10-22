@@ -333,6 +333,30 @@ def derive_plan(workload):
             "aliases": aliases, "seed": seed}
 
 
+CONTROLLED_CUSTOMER_FIRST_NAME = "John"
+CONTROLLED_CUSTOMER_LAST_NAME = "Smith"
+
+
+def derive_controlled_creation_state(first_name, last_name, initial_balance):
+    """Derive creation identity and score without trusting an HTTP receipt.
+
+    The fixture opens the account on the controlled current date, so its time
+    factor is zero.  Keep this implementation independent from the Java
+    endpoint so evidence assembly detects a forged fixture response.
+    """
+    if not isinstance(first_name, str) or not first_name:
+        raise ValueError("controlled first name is required")
+    if not isinstance(last_name, str) or not last_name:
+        raise ValueError("controlled last name is required")
+    balance = int(initial_balance)
+    length = len(first_name) + len(last_name)
+    name_factor = 3 if length <= 5 else length * 3 if length > 10 else length
+    aggregation = name_factor + balance + 5
+    score = "C" if aggregation <= 0 else "B" if aggregation % 2 == 0 else "A"
+    return {"fullName": first_name + " " + last_name,
+            "balance": balance, "score": score}
+
+
 class Collector:
     """Collect public candidate results and independent PostgreSQL source receipts.
 
@@ -479,7 +503,9 @@ class Collector:
             request_body=request_body)
 
     def creation_truth(self, creation, national_identity_number, balance, controlled_clock,
-                       *, phase):
+                       *, phase,
+                       controlled_first_name=CONTROLLED_CUSTOMER_FIRST_NAME,
+                       controlled_last_name=CONTROLLED_CUSTOMER_LAST_NAME):
         """Collect controlled customer/scoring truth without a public or JPA request.
 
         The fixture response must attest the exact controlled inputs.  Evidence records
@@ -494,13 +520,17 @@ class Collector:
             "national_identity_number": national_identity_number,
             "initial_balance": int(balance),
             "controlled_clock": controlled_clock,
+            "controlled_first_name": controlled_first_name,
+            "controlled_last_name": controlled_last_name,
         }
         path = ("/internal/cutover/fixtures/creation-truth/" +
                 urllib.parse.quote(account_number, safe="") +
                 "?nationalIdentityNumber=" +
                 urllib.parse.quote(national_identity_number, safe="") +
                 "&balance=" + str(int(balance)) +
-                "&controlledClock=" + urllib.parse.quote(controlled_clock, safe=""))
+                "&controlledClock=" + urllib.parse.quote(controlled_clock, safe="") +
+                "&firstName=" + urllib.parse.quote(controlled_first_name, safe="") +
+                "&lastName=" + urllib.parse.quote(controlled_last_name, safe=""))
         started = now_ms()
         status, receipt, transport = self._exchange(
             "GET", path, None, {"X-Trace-Id": trace_id,
@@ -515,11 +545,16 @@ class Collector:
             "nationalIdentityNumber": national_identity_number,
             "initialBalance": int(balance),
             "controlledClock": controlled_clock,
+            "firstName": controlled_first_name,
+            "lastName": controlled_last_name,
         }
         if any(receipt.get(key) != value for key, value in expected_attestation.items()):
             raise RuntimeError("target-independent creation truth provenance/input mismatch")
-        body = {key: receipt.get(key) for key in
-                ("accountNumber", "fullName", "balance", "score")}
+        derived = derive_controlled_creation_state(
+            controlled_first_name, controlled_last_name, balance)
+        body = {"accountNumber": account_number, **derived}
+        if any(receipt.get(key) != value for key, value in body.items()):
+            raise RuntimeError("target-independent creation truth derived-state mismatch")
         return self._record(
             trace_id=trace_id, comparison_id=None, origin="source", phase=phase,
             method="GET", route_template=ROUTES["read"][1], started=started,
@@ -882,6 +917,8 @@ def replace_application(c, accounts, operation_id, heldout_creation, workload_cl
             "national_identity_number": heldout_identity,
             "initial_balance": 0,
             "controlled_clock": workload_clock,
+            "controlled_first_name": CONTROLLED_CUSTOMER_FIRST_NAME,
+            "controlled_last_name": CONTROLLED_CUSTOMER_LAST_NAME,
         })
     if (created["status"] != 201 or created.get("body") != {
             "accountNumber": heldout_account}):

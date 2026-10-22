@@ -198,6 +198,14 @@
               "minLength": 1,
               "type": "string"
             },
+            "controlled_first_name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "controlled_last_name": {
+              "minLength": 1,
+              "type": "string"
+            },
             "initial_balance": {
               "minimum": 0,
               "type": "integer"
@@ -211,7 +219,9 @@
             "account_number",
             "national_identity_number",
             "initial_balance",
-            "controlled_clock"
+            "controlled_clock",
+            "controlled_first_name",
+            "controlled_last_name"
           ],
           "type": "object"
         },

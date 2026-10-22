@@ -73,7 +73,9 @@ public class CutoverFixtureController {
             @PathVariable String accountNumber,
             @RequestParam String nationalIdentityNumber,
             @RequestParam(defaultValue = "0") int balance,
-            @RequestParam String controlledClock) {
+            @RequestParam String controlledClock,
+            @RequestParam String firstName,
+            @RequestParam String lastName) {
         LocalDateTime expectedClock;
         try { expectedClock = OffsetDateTime.parse(controlledClock).toLocalDateTime(); }
         catch (RuntimeException ignored) { expectedClock = LocalDateTime.parse(controlledClock); }
@@ -83,8 +85,8 @@ public class CutoverFixtureController {
         account.setAccountId(1L);
         account.setAccountNumber(accountNumber);
         account.setNationalIdentityNumber(nationalIdentityNumber);
-        account.setFirstName("John");
-        account.setLastName("Smith");
+        account.setFirstName(firstName);
+        account.setLastName(lastName);
         account.setOpeningDate(clock.now().toLocalDate());
         account.setBalance(balance);
 
@@ -94,7 +96,9 @@ public class CutoverFixtureController {
         body.put("nationalIdentityNumber", nationalIdentityNumber);
         body.put("initialBalance", balance);
         body.put("controlledClock", controlledClock);
-        body.put("fullName", "John Smith");
+        body.put("firstName", firstName);
+        body.put("lastName", lastName);
+        body.put("fullName", firstName + " " + lastName);
         body.put("balance", balance);
         body.put("score", DefaultScoreCalculator.create(clock)
                 .calculate(BankAccountConverter.toEntity(account)).toString());

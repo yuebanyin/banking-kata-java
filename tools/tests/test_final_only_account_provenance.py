@@ -20,8 +20,8 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
                  "volume_id": "mongo-volume", "accounts": []},
                 {"purpose": "final_reconciliation", "captured_ms": 300,
                  "volume_id": "mongo-volume", "accounts": [
-                     {"accountNumber": "ACC-NEW", "fullName": "New Holder",
-                      "balance": 0, "score": "C",
+                     {"accountNumber": "ACC-NEW", "fullName": "John Smith",
+                      "balance": 0, "score": "B",
                       "appliedOperationIds": ["create-new"]}
                  ]},
             ],
@@ -44,8 +44,8 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
         read = {"trace_id": "read-new", "origin": "candidate", "method": "GET",
                 "status": 200, "started_ms": 250, "completed_ms": 255,
                 "request_account_number": "ACC-NEW",
-                "body": {"accountNumber": "ACC-NEW", "fullName": "New Holder",
-                         "balance": 0, "score": "C"}}
+                "body": {"accountNumber": "ACC-NEW", "fullName": "John Smith",
+                         "balance": 0, "score": "B"}}
         journal = {"operation_id": "create-new", "idempotency_key": "create-new-key",
                    "request_trace_id": "create-new-trace", "kind": "create",
                    "account_number": "ACC-NEW", "amount": 0,
@@ -56,8 +56,8 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
                         "route_template": "/bank-accounts/{accountNumber}",
                         "status": 200, "started_ms": 246, "completed_ms": 249,
                         "request_account_number": "ACC-NEW",
-                        "body": {"accountNumber": "ACC-NEW", "fullName": "New Holder",
-                                 "balance": 0, "score": "C"}}
+                        "body": {"accountNumber": "ACC-NEW", "fullName": "John Smith",
+                                 "balance": 0, "score": "B"}}
         source_truth["comparison_id"] = None
         source_truth["request_operation_id"] = journal["operation_id"]
         source_truth["request_idempotency_key"] = journal["idempotency_key"]
@@ -66,6 +66,8 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
             "national_identity_number": "IDENTITY-NEW",
             "initial_balance": 0,
             "controlled_clock": "2025-01-01T00:00:00Z",
+            "controlled_first_name": "John",
+            "controlled_last_name": "Smith",
         }
         create.update({
             "phase": "target_only", "collector_kind": "public_route",
@@ -78,7 +80,8 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
             "actual_request_path":
                 "/internal/cutover/fixtures/creation-truth/ACC-NEW"
                 "?nationalIdentityNumber=IDENTITY-NEW&balance=0"
-                "&controlledClock=2025-01-01T00%3A00%3A00Z",
+                "&controlledClock=2025-01-01T00%3A00%3A00Z"
+                "&firstName=John&lastName=Smith",
             "controlled_creation_inputs": dict(inputs),
         })
         return [journal], [create, source_truth, read]
@@ -109,7 +112,7 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
         journals, traces = self.rows()
         traces[-1]["body"].update({"fullName": "Forged Holder", "balance": 777,
                                    "score": "A"})
-        with self.assertRaisesRegex(ValueError, "independent source truth"):
+        with self.assertRaisesRegex(ValueError, "controlled"):
             self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
     def test_rejects_creation_operation_identity_mismatch(self):
@@ -176,6 +179,17 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
         traces[0]["request_body"]["nationalIdentityNumber"] = "WRONG"
         with self.assertRaisesRegex(ValueError, "controlled identity input mismatch"):
             self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+
+    def test_rejects_matching_forged_fixture_snapshot_and_restart_get(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"fullName": "Forged Holder", "score": "A"})
+        journals, traces = self.rows()
+        traces[1]["body"].update({"fullName": "Forged Holder", "score": "A"})
+        traces[2]["body"].update({"fullName": "Forged Holder", "score": "A"})
+        with self.assertRaisesRegex(ValueError, "controlled inputs"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
 
 if __name__ == "__main__":
