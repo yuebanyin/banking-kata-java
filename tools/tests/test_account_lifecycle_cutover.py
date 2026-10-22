@@ -328,6 +328,47 @@ class MongoSnapshotReconciliationTest(unittest.TestCase):
                                 "balance": 51, "score": "A"}})
         self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
+    def test_accepts_deposit_after_latest_get_before_snapshot(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"balance": 51, "score": "A",
+                      "appliedOperationIds": ["deposit-1", "deposit-2"]})
+        journals, traces = self.rows()
+        journals.append({"operation_id": "deposit-2", "account_number": "ACC-1",
+                         "kind": "deposit", "amount": 1, "acknowledged": True,
+                         "result": "applied", "completed_ms": 240})
+
+        # The latest GET still observes balance 42/score B.  Reconciliation must
+        # replay both later deposits and derive the snapshot's balance 51/score A.
+        self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_accepts_withdrawal_after_latest_get_before_snapshot(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"balance": 49, "score": "A",
+                      "appliedOperationIds": ["deposit-1", "withdraw-2"]})
+        journals, traces = self.rows()
+        journals.append({"operation_id": "withdraw-2", "account_number": "ACC-1",
+                         "kind": "withdraw", "amount": 1, "acknowledged": True,
+                         "result": "applied", "completed_ms": 240})
+
+        # The latest GET still observes balance 42/score B.  Reconciliation must
+        # replay the later deposit and withdrawal, then derive balance 49/score A.
+        self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_rejects_invalid_score_on_non_latest_get(self):
+        evidence = self.evidence()
+        journals, traces = self.rows()
+        traces[0]["body"]["score"] = "A"
+        traces.append({"trace_id": "later-valid-read", "origin": "candidate",
+                       "method": "GET", "status": 200, "completed_ms": 198,
+                       "request_account_number": "ACC-1",
+                       "body": {"accountNumber": "ACC-1", "fullName": "Ada Holder",
+                                "balance": 50, "score": "B"}})
+
+        with self.assertRaisesRegex(ValueError, "GET score is not derived"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
     def test_rejects_matching_stale_snapshot_and_get_score_after_deposit(self):
         evidence = self.evidence()
         final = evidence["mongo_snapshots"][1]["accounts"][0]

@@ -382,6 +382,15 @@ def validate_mongo_snapshots(evidence, journals, traces):
         latest_get = {}
         for row in successful_gets:
             number = row["request_account_number"]
+            body = row["body"]
+            require(isinstance(body, dict) and body.get("accountNumber") == number,
+                    "GET identity does not match requested account: " + str(number))
+            observed_balance = body.get("balance")
+            require(isinstance(observed_balance, int),
+                    "GET balance is not an integer: " + str(number))
+            observed_score = derive_controlled_score(body.get("fullName"), observed_balance)
+            require(body.get("score") == observed_score,
+                    "GET score is not derived from controlled state at its observed balance: " + str(number))
             if number is not None and (number not in latest_get or
                                        row["completed_ms"] > latest_get[number]["completed_ms"]):
                 latest_get[number] = row
@@ -398,9 +407,11 @@ def validate_mongo_snapshots(evidence, journals, traces):
             body = read["body"]
             require(isinstance(body, dict) and body.get("accountNumber") == number,
                     "GET identity does not match MongoDB account: " + number)
-            expected_balance = body.get("balance")
-            require(isinstance(expected_balance, int),
+            observed_balance = body.get("balance")
+            require(isinstance(observed_balance, int),
                     "GET balance is not an integer for MongoDB account: " + number)
+            observed_full_name = body.get("fullName")
+            expected_balance = observed_balance
             for operation in applicable:
                 if (operation["account_number"] == number and
                         operation["completed_ms"] > read["completed_ms"]):
@@ -408,12 +419,14 @@ def validate_mongo_snapshots(evidence, journals, traces):
                         expected_balance += operation["amount"]
                     elif operation["kind"] == "withdraw":
                         expected_balance -= operation["amount"]
-            require(row["fullName"] == body.get("fullName"),
+            require(row["fullName"] == observed_full_name,
                     "MongoDB fullName differs from latest public state: " + number)
             require(row["balance"] == expected_balance,
                     "MongoDB balance differs from replayed public state: " + number)
-            require(row["score"] == body.get("score"),
-                    "MongoDB score differs from latest public state: " + number)
+            expected_snapshot_score = derive_controlled_score(
+                observed_full_name, expected_balance)
+            require(row["score"] == expected_snapshot_score,
+                    "MongoDB score is not derived from replayed snapshot balance: " + number)
             ids = row["appliedOperationIds"]
             require(len(ids) == len(set(ids)), "duplicate applied operation on account")
             expected_ids = [operation["operation_id"] for operation in applicable
