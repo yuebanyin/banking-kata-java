@@ -58,6 +58,9 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
                         "request_account_number": "ACC-NEW",
                         "body": {"accountNumber": "ACC-NEW", "fullName": "New Holder",
                                  "balance": 0, "score": "C"}}
+        source_truth["comparison_id"] = None
+        source_truth["request_operation_id"] = journal["operation_id"]
+        source_truth["request_idempotency_key"] = journal["idempotency_key"]
         return [journal], [create, source_truth, read]
 
     def test_accepts_one_linked_applied_creation_between_snapshots(self):
@@ -109,6 +112,14 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
         journals[0]["started_ms"] = 199
         with self.assertRaisesRegex(ValueError, "exactly one successful creation POST"):
             self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
+
+    def test_rejects_truth_not_bound_to_the_creation_operation(self):
+        journals, traces = self.rows()
+        traces[1]["request_operation_id"] = "unrelated-operation"
+        with self.assertRaisesRegex(ValueError, "independent source creation truth"):
+            self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
+
 
 
 if __name__ == "__main__":

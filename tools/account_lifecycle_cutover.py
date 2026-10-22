@@ -71,7 +71,7 @@ def observed_network_id(reference):
 
 def replacement_environment():
     return [
-        "SPRING_PROFILES_ACTIVE=adapter-persistence-mongo,target-only,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none",
+        "SPRING_PROFILES_ACTIVE=adapter-persistence-mongo,target-only,account-cutover,adapter-generation-random,adapter-microservice-sim,adapter-thirdparty-sim,adapter-time-system,adapter-auth-none",
         "MONGODB_URI=mongodb://root:cutover@mongodb:27017/?authSource=admin",
         "MONGODB_DATABASE_NAME=banking_kata_db",
         "CUTOVER_EFFECTIVE_STORAGE=mongodb",
@@ -462,6 +462,38 @@ class Collector:
             transport=None, account=account, amount=amount, operation_id=operation_id,
             idempotency_key=idempotency_key)
 
+    def creation_truth(self, creation, national_identity_number, balance, *, phase):
+        """Collect controlled customer/scoring truth without a public or JPA request.
+
+        This endpoint is persistence independent and remains available in the
+        audited target-only replacement.  The returned source trace is linked to
+        the one creation by its operation and idempotency identities, but is not
+        presented as a public source/candidate comparison pair.
+        """
+        self.sequence += 1
+        trace_id = "%s-trace-%04d" % (self.run_id, self.sequence)
+        path = ("/internal/cutover/fixtures/creation-truth/" +
+                urllib.parse.quote(creation["body"]["accountNumber"]) +
+                "?nationalIdentityNumber=" + urllib.parse.quote(national_identity_number) +
+                "&balance=" + str(balance))
+        started = now_ms()
+        status, body, transport = self._exchange(
+            "GET", path, None, {"X-Trace-Id": trace_id,
+                                "X-Evidence-Time": self.evidence_time})
+        completed = now_ms()
+        if transport or status != 200 or not isinstance(body, dict):
+            raise RuntimeError("target-independent creation truth failed: %s %s %s" %
+                               (status, transport, body))
+        if body.get("accountNumber") != creation["body"].get("accountNumber"):
+            raise RuntimeError("target-independent creation truth has wrong account")
+        return self._record(
+            trace_id=trace_id, comparison_id=None, origin="source", phase=phase,
+            method="GET", route_template=ROUTES["read"][1], started=started,
+            completed=completed, status=status, response_body=body, transport=None,
+            account=creation.get("body", {}).get("accountNumber"), amount=None,
+            operation_id=creation.get("request_operation_id"),
+            idempotency_key=creation.get("request_idempotency_key"))
+
     def internal(self, method, path, **kwargs):
         trace = self.request(method, path, route_template=path, **kwargs)
         self.traces.pop()
@@ -738,7 +770,7 @@ def assert_schema_complete(value, schema):
     return value
 
 
-def replace_application(c, accounts, operation_id):
+def replace_application(c, accounts, operation_id, heldout_creation, workload_clock):
     old = docker_inspect("banking-app")
     project = _compose_labels(old).get("com.docker.compose.project")
     if not project:
@@ -791,6 +823,44 @@ def replace_application(c, accounts, operation_id):
         raise RuntimeError("replacement application did not become ready")
 
     restart_ids = [probe["trace_id"]]
+
+    # Exercise account creation after the pre-replacement snapshot while the
+    # source-denial monitor is active.  Configure only in-process collaborators:
+    # neither this setup nor the truth endpoint can consult PostgreSQL/JPA.
+    heldout_account = heldout_creation["account_number"]
+    heldout_identity = heldout_creation["national_identity_number"]
+    c.internal("POST", "/internal/cutover/fixtures/clock?value=" +
+               urllib.parse.quote(workload_clock))
+    configure_customer(c, heldout_identity, "eligible")
+    queue_account(c, heldout_account)
+    create_operation = operation_id + "-create"
+    created = c.request(
+        "POST", "/bank-accounts",
+        body={"nationalIdentityNumber": heldout_identity, "balance": 0},
+        headers={"X-Operation-Id": create_operation,
+                 "Idempotency-Key": create_operation},
+        phase="target_only", route_template=ROUTES["create"][1],
+        operation_id=create_operation, idempotency_key=create_operation)
+    if (created["status"] != 201 or created.get("body") != {
+            "accountNumber": heldout_account}):
+        raise RuntimeError("target-only held-out creation did not preserve its contract")
+    restart_ids.append(created["trace_id"])
+
+    creation_truth = c.creation_truth(
+        created, heldout_identity, 0, phase="target_only")
+    if creation_truth["status"] != 200:
+        raise RuntimeError("target-independent creation truth was unavailable")
+
+    accounts["target-created"] = heldout_account
+    created_read = c.request(
+        "GET", "/bank-accounts/" + urllib.parse.quote(heldout_account),
+        phase="target_only", route_template=ROUTES["read"][1],
+        account=heldout_account)
+    if (created_read["status"] != 200 or
+            created_read.get("body") != creation_truth.get("body")):
+        raise RuntimeError("target-only creation differs from independent customer/scoring truth")
+    restart_ids.append(created_read["trace_id"])
+
     other = accounts.get("just-created", probe_account)
     restart_ids.append(c.request("GET", "/bank-accounts/" + urllib.parse.quote(other),
                                  phase="target_only", route_template=ROUTES["read"][1],
@@ -919,7 +989,14 @@ def execute(args):
         "accounts": pre_replacement_accounts,
     }
 
-    deployment = replace_application(c, accounts, run_id + "-restart-write")
+    heldout_index = allocation[0]
+    allocation[0] += 1
+    heldout_creation = {
+        "account_number": safe_number(plan, heldout_index, "target-only-heldout"),
+        "national_identity_number": identity(plan["seed"], 100 + heldout_index),
+    }
+    deployment = replace_application(
+        c, accounts, run_id + "-restart-write", heldout_creation, plan["clock"])
     # The target-only controller exposes the durable Mongo journal directly.
     journal_rows = c.internal("GET", "/internal/evidence/journal")
     journals = normalize_journal(journal_rows, {t["trace_id"] for t in c.traces})

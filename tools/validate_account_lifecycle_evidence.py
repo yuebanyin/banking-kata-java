@@ -412,6 +412,9 @@ def validate_mongo_snapshots(evidence, journals, traces):
                         and row.get("route_template") == "/bank-accounts/{accountNumber}"
                         and row.get("status") == 200
                         and row.get("request_account_number") == number
+                        and row.get("comparison_id") is None
+                        and row.get("request_operation_id") == operation_id
+                        and row.get("request_idempotency_key") == idempotency_key
                         and row.get("started_ms", -1) >= creation.get("completed_ms", upper + 1)
                         and row.get("completed_ms", upper + 1) <= upper]
         require(source_reads,

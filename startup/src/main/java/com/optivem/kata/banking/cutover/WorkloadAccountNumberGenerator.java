@@ -12,7 +12,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 @Component
 @Primary
-@Profile(ProfileNames.ACCOUNT_CUTOVER + " & !" + ProfileNames.TARGET_ONLY)
+@Profile(ProfileNames.ACCOUNT_CUTOVER)
 public class WorkloadAccountNumberGenerator implements AccountNumberGenerator {
     private final Queue<String> values = new ConcurrentLinkedQueue<>();
     public void enqueue(String accountNumber) { values.add(accountNumber); }

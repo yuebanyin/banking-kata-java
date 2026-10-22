@@ -190,7 +190,7 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
                 result[(method, route)] = ids
             return result
 
-        def replacement(collector, accounts, operation_id):
+        def replacement(collector, accounts, operation_id, heldout_creation, workload_clock):
             numbers = list(accounts.values())
             restart = []
             for index, number in enumerate(numbers[:3]):
