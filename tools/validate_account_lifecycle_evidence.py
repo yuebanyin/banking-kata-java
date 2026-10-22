@@ -18,21 +18,31 @@ CONTROLLED_CUSTOMER_FIRST_NAME = "John"
 CONTROLLED_CUSTOMER_LAST_NAME = "Smith"
 
 
+def derive_controlled_score(full_name, balance):
+    """Mirror the domain score for the fixed opening/scoring clock used by the run."""
+    require(isinstance(full_name, str) and full_name.strip(),
+            "controlled full name is required")
+    require(isinstance(balance, int),
+            "controlled balance must be an integer")
+    # The holder projection inserts one separator; the domain name factor uses
+    # only the first- and last-name character counts.  All cutover creations use
+    # the same controlled instant for opening and scoring, so the time factor is
+    # zero even after a container replacement.
+    length = len(full_name.replace(" ", ""))
+    name_factor = 3 if length <= 5 else length * 3 if length > 10 else length
+    aggregation = name_factor + balance + 5
+    return "C" if aggregation <= 0 else "B" if aggregation % 2 == 0 else "A"
+
+
 def derive_controlled_creation_state(first_name, last_name, initial_balance):
     """Independently derive target-only holder and score from fixture inputs."""
     require(isinstance(first_name, str) and first_name,
             "controlled first name is required")
     require(isinstance(last_name, str) and last_name,
             "controlled last name is required")
-    require(isinstance(initial_balance, int),
-            "controlled initial balance must be an integer")
-    length = len(first_name) + len(last_name)
-    name_factor = 3 if length <= 5 else length * 3 if length > 10 else length
-    # Opening and scoring dates are the same controlled clock date.
-    aggregation = name_factor + initial_balance + 5
-    score = "C" if aggregation <= 0 else "B" if aggregation % 2 == 0 else "A"
-    return {"fullName": first_name + " " + last_name,
-            "balance": initial_balance, "score": score}
+    full_name = first_name + " " + last_name
+    return {"fullName": full_name, "balance": initial_balance,
+            "score": derive_controlled_score(full_name, initial_balance)}
 
 
 def require(condition, message):
@@ -562,8 +572,9 @@ def validate_mongo_snapshots(evidence, journals, traces):
         current = after[number]
         require(current["fullName"] == expected_state["fullName"],
                 "final-only fullName differs from controlled derivation: " + number)
-        require(current["score"] == expected_state["score"],
-                "final-only score differs from controlled derivation: " + number)
+        expected_score = derive_controlled_score(expected_state["fullName"], expected_balance)
+        require(current["score"] == expected_score,
+                "final-only score differs from controlled balance derivation: " + number)
         require(current["balance"] == expected_balance,
                 "final-only balance differs from source truth plus journal replay: " + number)
 
@@ -578,8 +589,6 @@ def validate_mongo_snapshots(evidence, journals, traces):
         current = after[number]
         require(current["fullName"] == old["fullName"],
                 "replacement changed immutable fullName: " + number)
-        require(current["score"] == old["score"],
-                "replacement changed immutable score: " + number)
 
         old_ids = old["appliedOperationIds"]
         current_ids = current["appliedOperationIds"]
@@ -598,6 +607,9 @@ def validate_mongo_snapshots(evidence, journals, traces):
                 expected_balance -= operation["amount"]
         require(current["balance"] == expected_balance,
                 "replacement balance delta is not journal-derived: " + number)
+        expected_score = derive_controlled_score(old["fullName"], expected_balance)
+        require(current["score"] == expected_score,
+                "replacement score is not derived from controlled state: " + number)
 
 
 def validate(evidence):

@@ -127,10 +127,17 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
             })
             journals.append(item)
 
+        def score_for(full_name, balance):
+            length = len(full_name.replace(" ", ""))
+            name_factor = 3 if length <= 5 else length * 3 if length > 10 else length
+            aggregation = name_factor + balance + 5
+            return "C" if aggregation <= 0 else "B" if aggregation % 2 == 0 else "A"
+
         def seed(_collector, number, _identity, balance):
+            full_name = "Holder " + number
             states[number] = {"accountNumber": number,
-                              "fullName": "Holder " + number,
-                              "balance": balance, "score": "B",
+                              "fullName": full_name, "balance": balance,
+                              "score": score_for(full_name, balance),
                               "appliedOperationIds": []}
 
         def financial(collector, operation, phase, accounts):
@@ -159,6 +166,9 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
             else:
                 states[number]["balance"] -= amount
                 states[number]["appliedOperationIds"].append(operation_id)
+            if result == "applied":
+                states[number]["score"] = score_for(
+                    states[number]["fullName"], states[number]["balance"])
             at_ms = interval_times[phase] + 5 + len(journals) * 3
             row = trace(collector, "POST", runner.ROUTES[kind][1], phase, at_ms,
                         status, number, amount, operation_id, idem)
@@ -216,6 +226,8 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
                          "target_only_restart", 540, 204, number, 1,
                          operation_id, operation_id, container_id="new-app")
             states[number]["balance"] += 1
+            states[number]["score"] = score_for(
+                states[number]["fullName"], states[number]["balance"])
             states[number]["appliedOperationIds"].append(operation_id)
             journal(post, "deposit", "applied", 1)
             restart.append(post["trace_id"])

@@ -90,6 +90,29 @@ class FinalOnlyAccountProvenanceTest(unittest.TestCase):
         journals, traces = self.rows()
         self.validator.validate_mongo_snapshots(self.evidence(), journals, traces)
 
+    def test_recomputes_final_only_score_after_later_deposit(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"balance": 1, "score": "A",
+                      "appliedOperationIds": ["create-new", "deposit-new"]})
+        journals, traces = self.rows()
+        journals.append({"operation_id": "deposit-new", "idempotency_key": "deposit-new-key",
+                         "request_trace_id": "deposit-new-trace", "kind": "deposit",
+                         "account_number": "ACC-NEW", "amount": 1, "acknowledged": True,
+                         "result": "applied", "started_ms": 260, "completed_ms": 265})
+        traces.append({"trace_id": "deposit-new-trace", "origin": "candidate",
+                       "method": "POST", "route_template": "/bank-accounts/{accountNumber}/deposits",
+                       "status": 204, "started_ms": 260, "completed_ms": 265, "body": None,
+                       "request_account_number": "ACC-NEW", "request_amount": 1,
+                       "request_operation_id": "deposit-new",
+                       "request_idempotency_key": "deposit-new-key"})
+        traces.append({"trace_id": "read-after-deposit", "origin": "candidate",
+                       "method": "GET", "status": 200, "started_ms": 270,
+                       "completed_ms": 275, "request_account_number": "ACC-NEW",
+                       "body": {"accountNumber": "ACC-NEW", "fullName": "John Smith",
+                                "balance": 1, "score": "A"}})
+        self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
     def test_rejects_duplicate_only_creation_between_snapshots(self):
         evidence = self.evidence()
         evidence["mongo_snapshots"][1]["accounts"][0]["appliedOperationIds"] = []

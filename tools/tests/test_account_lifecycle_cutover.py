@@ -312,16 +312,55 @@ class MongoSnapshotReconciliationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fullName"):
             self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
-    def test_replays_only_between_snapshot_journal_operations(self):
+    def test_accepts_deposit_induced_b_to_a_score_transition(self):
         evidence = self.evidence()
         final = evidence["mongo_snapshots"][1]["accounts"][0]
-        final["balance"] = 55
-        final["appliedOperationIds"] = ["deposit-1", "deposit-2"]
+        final.update({"balance": 51, "score": "A",
+                      "appliedOperationIds": ["deposit-1", "deposit-2"]})
         journals, traces = self.rows()
         journals.append({"operation_id": "deposit-2", "account_number": "ACC-1",
-                         "kind": "deposit", "amount": 5, "acknowledged": True,
+                         "kind": "deposit", "amount": 1, "acknowledged": True,
                          "result": "applied", "completed_ms": 240})
+        traces.append({"trace_id": "post-deposit-read", "origin": "candidate",
+                       "method": "GET", "status": 200, "completed_ms": 250,
+                       "request_account_number": "ACC-1",
+                       "body": {"accountNumber": "ACC-1", "fullName": "Ada Holder",
+                                "balance": 51, "score": "A"}})
         self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_rejects_matching_stale_snapshot_and_get_score_after_deposit(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"balance": 51, "score": "B",
+                      "appliedOperationIds": ["deposit-1", "deposit-2"]})
+        journals, traces = self.rows()
+        journals.append({"operation_id": "deposit-2", "account_number": "ACC-1",
+                         "kind": "deposit", "amount": 1, "acknowledged": True,
+                         "result": "applied", "completed_ms": 240})
+        traces.append({"trace_id": "stale-score-read", "origin": "candidate",
+                       "method": "GET", "status": 200, "completed_ms": 250,
+                       "request_account_number": "ACC-1",
+                       "body": {"accountNumber": "ACC-1", "fullName": "Ada Holder",
+                                "balance": 51, "score": "B"}})
+        with self.assertRaisesRegex(ValueError, "score is not derived"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
+
+    def test_rejects_matching_forged_snapshot_and_get_score_after_deposit(self):
+        evidence = self.evidence()
+        final = evidence["mongo_snapshots"][1]["accounts"][0]
+        final.update({"balance": 51, "score": "C",
+                      "appliedOperationIds": ["deposit-1", "deposit-2"]})
+        journals, traces = self.rows()
+        journals.append({"operation_id": "deposit-2", "account_number": "ACC-1",
+                         "kind": "deposit", "amount": 1, "acknowledged": True,
+                         "result": "applied", "completed_ms": 240})
+        traces.append({"trace_id": "forged-score-read", "origin": "candidate",
+                       "method": "GET", "status": 200, "completed_ms": 250,
+                       "request_account_number": "ACC-1",
+                       "body": {"accountNumber": "ACC-1", "fullName": "Ada Holder",
+                                "balance": 51, "score": "C"}})
+        with self.assertRaisesRegex(ValueError, "score is not derived"):
+            self.validator.validate_mongo_snapshots(evidence, journals, traces)
 
     def test_rejects_matching_final_snapshot_and_restart_get_corruption(self):
         evidence = self.evidence()
