@@ -2,6 +2,9 @@ package com.optivem.kata.banking;
 
 import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
 import com.optivem.kata.banking.adapter.driven.persistence.mongo.MongoBankAccountStorage;
+import com.optivem.kata.banking.adapter.driven.persistence.jpa.JpaBankAccountStorage;
+import com.optivem.kata.banking.adapter.driven.persistence.jpa.configuration.JpaBankAccountStoragePrimaryConfiguration;
+import com.optivem.kata.banking.adapter.driven.persistence.redis.RedisBankAccountStorage;
 import com.optivem.kata.banking.adapter.driven.persistence.jpa.configuration.JpaPersistenceConfiguration;
 import com.optivem.kata.banking.cutover.AccountCutoverCoordinator;
 import com.optivem.kata.banking.cutover.AccountOperationRecoveryLifecycle;
@@ -24,6 +27,43 @@ class PersistenceProfileConfigurationTest {
 
             assertThat(context.containsBeanDefinition("jpaBankAccountDataAccessor")).isTrue();
             assertThat(context.containsBeanDefinition("jpaSourceAccountOperationDataAccessor")).isTrue();
+        }
+    }
+
+    @Test
+    void mixedJpaAndRedisProfilesSelectJpaWhileKeepingRedisAvailable() {
+        try (var context = lazyContext(
+                ProfileNames.ADAPTER_PERSISTENCE_JPA,
+                ProfileNames.ADAPTER_PERSISTENCE_REDIS)) {
+            context.register(
+                    JpaBankAccountStorage.class,
+                    RedisBankAccountStorage.class,
+                    JpaBankAccountStoragePrimaryConfiguration.class);
+            context.refresh();
+
+            assertThat(context.containsBeanDefinition("jpaBankAccountStorage")).isTrue();
+            assertThat(context.containsBeanDefinition("RedisBankAccountStorage")).isTrue();
+            assertThat(context.getBeanFactory().getBeanDefinition("jpaBankAccountStorage").isPrimary()).isTrue();
+            assertThat(context.getBeanFactory().getBeanDefinition("RedisBankAccountStorage").isPrimary()).isFalse();
+        }
+    }
+
+    @Test
+    void cutoverLeavesJpaAsDelegateAndSelectsDualWriteStorage() {
+        try (var context = lazyContext(
+                ProfileNames.ACCOUNT_CUTOVER,
+                ProfileNames.ADAPTER_PERSISTENCE_JPA,
+                ProfileNames.ADAPTER_PERSISTENCE_MONGO)) {
+            context.register(
+                    JpaBankAccountStorage.class,
+                    MongoBankAccountStorage.class,
+                    DualWriteBankAccountStorage.class,
+                    JpaBankAccountStoragePrimaryConfiguration.class);
+            context.refresh();
+
+            assertThat(context.containsBeanDefinition("selectJpaBankAccountStorage")).isFalse();
+            assertThat(context.getBeanFactory().getBeanDefinition("jpaBankAccountStorage").isPrimary()).isFalse();
+            assertThat(context.getBeanFactory().getBeanDefinition("dualWriteBankAccountStorage").isPrimary()).isTrue();
         }
     }
 
