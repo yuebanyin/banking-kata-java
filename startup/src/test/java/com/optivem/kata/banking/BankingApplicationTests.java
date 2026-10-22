@@ -1,6 +1,5 @@
-package com.optivem.kata.banking.startup;
+package com.optivem.kata.banking;
 
-import com.optivem.kata.banking.BankingApplication;
 import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -29,11 +28,27 @@ class BankingApplicationTests {
     private int testApplicationPort;
 
     @Test
-    void contextLoadsOnRandomPortWhileComposePortIsOccupied() {
+    void contextLoadsOnRandomPortWhileComposePortIsOccupied() throws IOException {
         // Port 8080 is held either by this test or by the running Compose app before this context starts.
+        assertComposePortIsOccupied();
         assertThat(testApplicationPort)
             .isPositive()
             .isNotEqualTo(COMPOSE_APPLICATION_PORT);
+        System.out.printf(
+            "port-isolation verified: composePort=%d occupied=true reservedByTest=%s springRandomPort=%d%n",
+            COMPOSE_APPLICATION_PORT,
+            COMPOSE_PORT_RESERVATION != null,
+            testApplicationPort);
+    }
+
+    private static void assertComposePortIsOccupied() throws IOException {
+        try (var competingSocket = new ServerSocket()) {
+            competingSocket.setReuseAddress(false);
+            org.junit.jupiter.api.Assertions.assertThrows(
+                BindException.class,
+                () -> competingSocket.bind(
+                    new InetSocketAddress(InetAddress.getLoopbackAddress(), COMPOSE_APPLICATION_PORT)));
+        }
     }
 
     @AfterAll
