@@ -1,6 +1,8 @@
 package com.optivem.kata.banking.cutover;
 
 import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
+import com.optivem.kata.banking.adapter.driven.microservice.fake.FakeCustomerGatewaySimulator;
+import com.optivem.kata.banking.adapter.driven.thirdparty.fake.FakeNationalIdentityGatewaySimulator;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Profile;
@@ -38,6 +40,34 @@ class CutoverWorkloadFixtureControllerTest {
         assertEquals(0, response.getBody().get("balance"));
         assertEquals("B", response.getBody().get("score").toString());
         verifyNoInteractions(identities, customers, numbers);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void customerConfigurationControlsTheActiveSimulatorBeans() {
+        ObjectProvider<FakeNationalIdentityGatewaySimulator> identities = mock(ObjectProvider.class);
+        ObjectProvider<FakeCustomerGatewaySimulator> customers = mock(ObjectProvider.class);
+        FakeNationalIdentityGatewaySimulator identity = mock(FakeNationalIdentityGatewaySimulator.class);
+        FakeCustomerGatewaySimulator customer = mock(FakeCustomerGatewaySimulator.class);
+        when(identities.getIfAvailable()).thenReturn(identity);
+        when(customers.getIfAvailable()).thenReturn(customer);
+        var controller = new CutoverWorkloadFixtureController(
+                identities, customers, mock(WorkloadAccountNumberGenerator.class),
+                mock(WorkloadDateTimeService.class));
+
+        var missing = controller.configure("00000042030", "missing");
+        var eligible = controller.configure("00000042031", "eligible");
+        var blacklisted = controller.configure("00000042032", "blacklisted");
+
+        assertEquals(204, missing.getStatusCodeValue());
+        assertEquals(204, eligible.getStatusCodeValue());
+        assertEquals(204, blacklisted.getStatusCodeValue());
+        verify(identity, never()).setupExistent("00000042030");
+        verify(identity).setupExistent("00000042031");
+        verify(identity).setupExistent("00000042032");
+        verify(customer).setupWhitelisted("00000042030");
+        verify(customer).setupWhitelisted("00000042031");
+        verify(customer).setupBlacklisted("00000042032");
     }
 
     @Test

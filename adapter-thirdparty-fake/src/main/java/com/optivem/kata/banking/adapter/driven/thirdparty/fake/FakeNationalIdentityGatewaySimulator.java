@@ -17,6 +17,11 @@ public class FakeNationalIdentityGatewaySimulator implements NationalIdentityGat
         provider.setupExistent("SIM_2");
     }
 
+    /** Controls the same in-memory provider used by public account requests. */
+    public void setupExistent(String nationalIdentityNumber) {
+        provider.setupExistent(nationalIdentityNumber);
+    }
+
     @Override
     public boolean exists(String nationalIdentityNumber) {
         return provider.exists(nationalIdentityNumber);

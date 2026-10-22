@@ -4,8 +4,8 @@ import com.optivem.kata.banking.adapter.driven.base.ProfileNames;
 import com.optivem.kata.banking.core.internal.cleanarch.acl.BankAccountConverter;
 import com.optivem.kata.banking.core.internal.cleanarch.domain.scoring.DefaultScoreCalculator;
 import com.optivem.kata.banking.core.ports.driven.BankAccountDto;
-import com.optivem.kata.banking.adapter.driven.microservice.fake.FakeCustomerGateway;
-import com.optivem.kata.banking.adapter.driven.thirdparty.fake.FakeNationalIdentityGateway;
+import com.optivem.kata.banking.adapter.driven.microservice.fake.FakeCustomerGatewaySimulator;
+import com.optivem.kata.banking.adapter.driven.thirdparty.fake.FakeNationalIdentityGatewaySimulator;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.ResponseEntity;
@@ -22,13 +22,13 @@ import java.util.Map;
 @RequestMapping("/internal/cutover/fixtures")
 @Profile(ProfileNames.ACCOUNT_CUTOVER)
 public class CutoverWorkloadFixtureController {
-    private final ObjectProvider<FakeNationalIdentityGateway> identities;
-    private final ObjectProvider<FakeCustomerGateway> customers;
+    private final ObjectProvider<FakeNationalIdentityGatewaySimulator> identities;
+    private final ObjectProvider<FakeCustomerGatewaySimulator> customers;
     private final WorkloadAccountNumberGenerator accountNumbers;
     private final WorkloadDateTimeService clock;
 
-    public CutoverWorkloadFixtureController(ObjectProvider<FakeNationalIdentityGateway> identities,
-                                    ObjectProvider<FakeCustomerGateway> customers,
+    public CutoverWorkloadFixtureController(ObjectProvider<FakeNationalIdentityGatewaySimulator> identities,
+                                    ObjectProvider<FakeCustomerGatewaySimulator> customers,
                                     WorkloadAccountNumberGenerator accountNumbers,
                                     WorkloadDateTimeService clock) {
         this.identities = identities;
@@ -96,8 +96,8 @@ public class CutoverWorkloadFixtureController {
     @PostMapping("/{nationalIdentityNumber}")
     public ResponseEntity<Void> configure(@PathVariable String nationalIdentityNumber,
                                           @RequestParam String customerCase) {
-        FakeNationalIdentityGateway identity = identities.getIfAvailable();
-        FakeCustomerGateway customer = customers.getIfAvailable();
+        FakeNationalIdentityGatewaySimulator identity = identities.getIfAvailable();
+        FakeCustomerGatewaySimulator customer = customers.getIfAvailable();
         if (identity == null || customer == null) return ResponseEntity.notFound().build();
         if (!"missing".equals(customerCase)) identity.setupExistent(nationalIdentityNumber);
         if ("blacklisted".equals(customerCase)) customer.setupBlacklisted(nationalIdentityNumber);

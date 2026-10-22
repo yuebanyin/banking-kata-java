@@ -15,6 +15,16 @@ public class FakeCustomerGatewaySimulator implements CustomerGateway {
         this.provider = new FakeCustomerGateway();
     }
 
+    /** Controls the same in-memory provider used by public account requests. */
+    public void setupBlacklisted(String nationalIdentityNumber) {
+        provider.setupBlacklisted(nationalIdentityNumber);
+    }
+
+    /** Controls the same in-memory provider used by public account requests. */
+    public void setupWhitelisted(String nationalIdentityNumber) {
+        provider.setupWhitelisted(nationalIdentityNumber);
+    }
+
     @Override
     public boolean isBlacklisted(String nationalIdentityNumber) {
         return provider.isBlacklisted(nationalIdentityNumber);
