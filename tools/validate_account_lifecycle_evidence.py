@@ -708,20 +708,29 @@ def validate(evidence):
     require(len(evidence["latency_partitions"]) == 4, "exactly four latency partitions required")
     require({(p["method"], p["route_template"]) for p in evidence["latency_partitions"]} == ROUTES,
             "latency route partitions incomplete")
+    used_latency_trace_ids = set()
     for part in evidence["latency_partitions"]:
         baseline, post = part["baseline_trace_ids"], part["post_cutover_trace_ids"]
         require(len(baseline) >= 20 and len(post) >= 20, "latency partition needs 20 samples per period")
         samples = []
         for period, ids in enumerate((baseline, post)):
+            require(len(ids) == len(set(ids)),
+                    "latency partition must contain unique trace IDs")
             current = []
             for trace_id in ids:
+                require(trace_id not in used_latency_trace_ids,
+                        "latency trace ID reused across partitions or periods")
+                used_latency_trace_ids.add(trace_id)
                 require(trace_id in by_id, "orphan latency trace")
                 trace = by_id[trace_id]
                 require((trace["method"], trace["route_template"]) ==
                         (part["method"], part["route_template"]), "latency route mismatch")
                 expected_phase = "source_baseline" if period == 0 else "target_only"
+                expected_origin = "source" if period == 0 else "candidate"
                 require(trace["phase"] == expected_phase,
                         "latency trace has wrong observation phase")
+                require(trace["origin"] == expected_origin,
+                        "latency trace has wrong observation origin")
                 current.append(trace["completed_ms"] - trace["started_ms"])
             samples.append(current)
         require(nearest_p95(samples[1]) <= nearest_p95(samples[0]) + 10, "p95 regression exceeds 10ms")

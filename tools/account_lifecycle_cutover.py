@@ -12,6 +12,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 from datetime import datetime, timezone
@@ -1007,7 +1008,38 @@ def replace_application(c, accounts, operation_id, heldout_creation, workload_cl
         "restart_trace_ids": restart_ids,
     }
 
+def publish_validated_evidence(evidence, workload_path, output_path):
+    """Publish evidence only after the semantic validator accepts the same bytes."""
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    # Defensively remove anything that appeared after execute() cleared stale output.
+    output.unlink(missing_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".%s." % output.name, suffix=".tmp", dir=str(output.parent))
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        subprocess.run(
+            [sys.executable, str(ROOT / "tools/validate_account_lifecycle_evidence.py"),
+             "--workload", str(Path(workload_path).resolve()),
+             "--evidence", str(temporary.resolve())],
+            cwd=ROOT, check=True)
+        os.replace(temporary, output)
+    except BaseException:
+        # A failed run must never leave either stale or newly invalid evidence.
+        output.unlink(missing_ok=True)
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def execute(args):
+    # Invalidate a prior run before any workload, HTTP, Docker, or database work.
+    output = Path(args.output)
+    output.unlink(missing_ok=True)
     workload = json.loads(Path(args.workload).read_text())
     plan = derive_plan(workload)
     run_id = "cutover-%s-%s" % (plan["seed"], now_ms())
@@ -1111,12 +1143,7 @@ def execute(args):
     schema_path = ROOT / "tb4_artifacts/candidate_evidence.schema.json"
     schema = json.loads(schema_path.read_text())
     assert_schema_complete(evidence, schema)
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
-    subprocess.run([sys.executable, str(ROOT / "tools/validate_account_lifecycle_evidence.py"),
-                    "--workload", str(Path(args.workload).resolve()),
-                    "--evidence", str(output.resolve())], cwd=ROOT, check=True)
+    publish_validated_evidence(evidence, args.workload, output)
     print("wrote validated cutover evidence to " + str(output))
 
 

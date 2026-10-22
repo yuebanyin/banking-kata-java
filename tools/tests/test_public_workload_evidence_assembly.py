@@ -12,6 +12,10 @@ spec = importlib.util.spec_from_file_location(
     "runner_public_assembly", ROOT / "tools/account_lifecycle_cutover.py")
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
+validator_spec = importlib.util.spec_from_file_location(
+    "validator_public_assembly", ROOT / "tools/validate_account_lifecycle_evidence.py")
+validator = importlib.util.module_from_spec(validator_spec)
+validator_spec.loader.exec_module(validator)
 
 
 def schema_specimen(node, root, salt="fixture"):
@@ -317,6 +321,21 @@ class PublicWorkloadEvidenceAssemblyTest(unittest.TestCase):
                 {row["purpose"] for row in evidence["mongo_snapshots"]})
             self.assertTrue(all(row["query"] == "direct_mongodb_query"
                                 for row in evidence["mongo_snapshots"]))
+
+
+            repeated = json.loads(json.dumps(evidence))
+            repeated_ids = repeated["latency_partitions"][0]["baseline_trace_ids"]
+            repeated["latency_partitions"][0]["baseline_trace_ids"] = [
+                repeated_ids[0]
+            ] * len(repeated_ids)
+            with self.assertRaisesRegex(ValueError, "unique trace IDs"):
+                validator.validate(repeated)
+
+            reused = json.loads(json.dumps(evidence))
+            first = reused["latency_partitions"][0]["baseline_trace_ids"][0]
+            reused["latency_partitions"][1]["baseline_trace_ids"][0] = first
+            with self.assertRaisesRegex(ValueError, "reused across partitions or periods"):
+                validator.validate(reused)
 
 if __name__ == "__main__":
     unittest.main()
