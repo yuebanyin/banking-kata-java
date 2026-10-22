@@ -1,5 +1,6 @@
 package com.optivem.kata.banking;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.core.env.StandardEnvironment;
@@ -22,6 +23,12 @@ class KeycloakTestConfigurationTest {
         assertThat(environment.getProperty("token-uri"))
                 .isEqualTo("http://localhost:10000/auth/realms/banking-kata/protocol/openid-connect/token");
         assertThat(environment.getProperty("client-id")).isEqualTo("test-client");
-        assertThat(environment.getProperty("client-secret")).isNotBlank();
+        var configuredSecret = environment.getProperty("client-secret");
+        var realm = new ObjectMapper().readTree(
+                new ClassPathResource("keycloak/realm-export.json").getInputStream());
+        var importedClient = realm.get("clients").findValuesAsText("clientId").indexOf("test-client");
+
+        assertThat(configuredSecret).isEqualTo(
+                realm.get("clients").get(importedClient).get("secret").textValue());
     }
 }

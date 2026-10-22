@@ -57,7 +57,7 @@ services:
       - postgres
 
   keycloak:
-    image: jboss/keycloak:16.0.0 # NOTE: Custom image build working on Mac M1 (https://github.com/docker/for-mac/issues/5310)
+    image: quay.io/keycloak/keycloak:16.0.0
     container_name: keycloak
     environment:
       - DB_VENDOR=postgres
@@ -72,7 +72,7 @@ services:
     networks:
       - local
     volumes:
-      - ./startup/src/main/resources/keycloak/realm-export.json:/tmp/realm-export.json
+      - ./startup/src/main/resources/keycloak/realm-export.json:/tmp/realm-export.json:ro
     depends_on:
       - postgres
   redis:
